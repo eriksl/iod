@@ -13,7 +13,7 @@ using boost::bad_lexical_cast;
 
 int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string & method, ConnectionData * con_cls, const KeyValues &) const throw()
 {
-	string	data, devicename;
+	string	data;
 
 	con_cls += 0; // ignore
 
@@ -24,61 +24,124 @@ int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string &
 
 	try
 	{
-		devicename = device->device_name();
-
-		data += "<div class=\"ge1\">" + devicename + "</div>\n";
+		data += "<table>";
+		data += "<tr><td class=\"title\" colspan=\"12\">" + device->device_name() + "</td></tr>\n";
+		data += "<tr><td class=\"heading\">id</td><td class=\"heading\">name</td><td class=\"heading\">type</td><td class=\"heading\">direction</td><td class=\"heading\">lower</td><td class=\"heading\">upper</td><td class=\"heading\">set</td><td class=\"heading\">read</td><td class=\"heading\">updated</td><td class=\"heading\">resampling</td><td class=\"heading\">value</td><td class=\"heading\">action</td></tr>\n";
 
 		DeviceIOIterator io;
 
 		for(io = device->begin(); io != device->end(); io++)
 		{
-			data += " <div class=\"ai1\">" + io->name + " </div>\n";
-			data += " <div class=\"ai2\">";
+			data += "<tr>";
+			data += "<td>" + lexical_cast<string>(io->id) + "</td>";
+			data += "<td class=\"l\">" + io->name + "</td>";
+			data += "<td>";
 
 			switch(io->type)
 			{
-
-				case(DeviceIO::no_type):	data += "<no type>";	break;
+				case(DeviceIO::no_type):	data += "-no type-";	break;
 				case(DeviceIO::analog):		data += "analog";		break;
 				case(DeviceIO::digital):	data += "digital";		break;
 				case(DeviceIO::counter):	data += "counter";		break;
 			}
 
-			data += " </div>\n";
-			data += " <div class=\"ai2\">";
+			data += "</td><td>";
 
 			switch(io->direction)
 			{
 
-				case(DeviceIO::no_direction):	data += "<no type>";		break;
-				case(DeviceIO::input):			data += "input";			break;
-				case(DeviceIO::output):			data += "output";			break;
-				case(DeviceIO::io):				data += "input/output";		break;
+				case(DeviceIO::no_direction):	data += "-no type-";	break;
+				case(DeviceIO::input):			data += "input";		break;
+				case(DeviceIO::output):			data += "output";		break;
+				case(DeviceIO::io):				data += "input/output";	break;
 			}
 
-			data += " </div>\n";
+			data += "</td>\n";
 
-			data += " <div class=\"ai2\">";
-			data += lexical_cast<string>(io->lower_boundary) + string("-") + lexical_cast<string>(io->upper_boundary);
-			data += " </div>\n";
+			data += "<td>" + lexical_cast<string>(io->lower_boundary) + "</td>";
+			data += "<td>" + lexical_cast<string>(io->upper_boundary) + "</td>";
 
-			data += " <div class=\"ai2\">";
-			data += lexical_cast<string>(io->value);
-			data += " </div>\n";
+			string stamp;
 
-#if 0
-			data +=
+			if(io->stamp_set > 0)
+			{
+				char timebuffer[64];
+				struct tm *tm = localtime(&io->stamp_set);
+				strftime(timebuffer, sizeof(timebuffer), "%Y/%m/%d %H:%M:%S", tm);
+				stamp = timebuffer;
+			}
+			else
+				stamp = "-unset-";
+
+			data += "<td>" + stamp + "</td>";
+
+			if(io->stamp_read > 0)
+			{
+				char timebuffer[64];
+				struct tm *tm = localtime(&io->stamp_read);
+				strftime(timebuffer, sizeof(timebuffer), "%Y/%m/%d %H:%M:%S", tm);
+				stamp = timebuffer;
+			}
+			else
+				stamp = "-unset-";
+
+			data += "<td>" + stamp + "</td>";
+
+			if(io->stamp_updated > 0)
+			{
+				char timebuffer[64];
+				struct tm *tm = localtime(&io->stamp_updated);
+				strftime(timebuffer, sizeof(timebuffer), "%Y/%m/%d %H:%M:%S", tm);
+				stamp = timebuffer;
+			}
+			else
+				stamp = "-unset-";
+
+			data += "<td>" + stamp + "</td>";
+
+			data += "<td>" +
 				make_simple_form
 				(
-			 		"post", "/get_analog_input",
-					"ai4",
-					"input", lexical_cast<string>(ix),
-					"get",
-					"ai5", "resampling", "1"
-				);
-			data += " </div>\n";
-#endif
+			 		"post", "/resampling",
+					"td",
+					"io", io->name,
+					"set",
+					"input", "value", lexical_cast<string>(io->resampling)
+
+				) + "</td>";
+
+			data += "<td>" +
+				make_simple_form
+				(
+			 		"post", "/write",
+					"td",
+					"io", io->name,
+					"set",
+					"input", "value", lexical_cast<string>(io->value)
+				) + "</td>";
+
+			data += "<td>" +
+				make_simple_form
+				(
+			 		"post", "/update",
+					"td",
+					"io", io->name,
+					"update"
+				) + "</td>";
+
+			data += "</tr>\n";
 		}
+
+		data += "<tr><td colspan=\"12\">" +
+			make_simple_form
+			(
+			 	"post", "/update",
+				"td",
+				"", "",
+				"update all"
+			) + "</td></tr>";
+
+		data += "</table>\n";
 	}
 	catch(string e)
 	{
@@ -95,102 +158,90 @@ int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string &
 	return(send_html(connection, "/", MHD_HTTP_OK, data));
 }
 
-int HttpServer::page_dispatcher_read(MHD_Connection * connection, const string & method, ConnectionData *, const KeyValues & variables) const throw()
+int HttpServer::page_dispatcher_update(MHD_Connection * connection, const string & method, ConnectionData *, const KeyValues & variables) const throw()
 {
 	string_string_map::const_iterator	it;
-	string								input;
-	int									resampling;
+	bool								any;
+	string								id;
+	string								error;
 	string								data;
-	string								value;
-	string								error = "OK";
-	bool								skip;
+	DeviceIOIterator					io;
 
 	if((method != "POST") && (method != "GET"))
 		return(http_error(connection, MHD_HTTP_METHOD_NOT_ALLOWED, "Method not allowed"));
 
-	if((it = variables.data.find("input")) == variables.data.end())
-		return(http_error(connection, MHD_HTTP_BAD_REQUEST, "Missing value: input"));
+	device->lock();
 
-	input		= it->second;
-	resampling	= 0;
-	skip		= false;
-
-	if((it = variables.data.find("resampling")) != variables.data.end())
+	if((it = variables.data.find("io")) == variables.data.end())
+		any = true;
+	else
 	{
-		try
+		any = false;
+		id = it->second;
+
+		if((io = device->find(id)) == device->end())
 		{
-			resampling = lexical_cast<int>(it->second);
-		}
-		catch(bad_lexical_cast e)
-		{
-			error = string("parameter error: ") + e.what();
-			value = "ERROR";
-			skip = true;
+			device->unlock();
+			return(http_error(connection, MHD_HTTP_BAD_REQUEST, string("Bad value: io: ") + id));
 		}
 	}
 
-	if(!skip)
+	try
 	{
-		device->lock();
-
-		try
-		{
-			if(resampling)
-				value = lexical_cast<string>(device->read(lexical_cast<int>(input), lexical_cast<int>(resampling)));
-			else
-				value = lexical_cast<string>(device->read(lexical_cast<int>(input)));
-		}
-		catch(string e)
-		{
-			error = e;
-			value = "ERROR";
-		}
-		catch(bad_lexical_cast e)
-		{
-			error = string("parameter error: ") + e.what();
-			value = "ERROR";
-		}
-		catch(...)
-		{
-			error = "generic error";
-			value = "ERROR";
-		}
-
-		device->unlock();
+		if(any)
+			device->update();
+		else
+			device->update(io);
+		error = "OK";
+	}
+	catch(string e)
+	{
+		error = string("ERROR: ") + e;
+	}
+	catch(...)
+	{
+		error = "generic error";
 	}
 
-	data = "<p>[" + value + "] read " + input + " (" + lexical_cast<string>(resampling) + ") = " + value + ": " + error + "</p>\n";
+	device->unlock();
 
-	return(send_html(connection, "/read", MHD_HTTP_OK, data, 10, "/"));
+	data = "<p>[" + error + "] update " + id + "</p>\n";
+
+	return(send_html(connection, "/update", MHD_HTTP_OK, data, 10, "/"));
 }
 
-int HttpServer::page_dispatcher_write(MHD_Connection * connection, const string & method, ConnectionData *, const KeyValues & variables) const throw()
+int HttpServer::page_dispatcher_resampling(MHD_Connection * connection, const string & method, ConnectionData *, const KeyValues & variables) const throw()
 {
 	string_string_map::const_iterator	it;
-	string								output;
+	string								id;
 	string								value;
 	string								error;
 	string								data;
 	string								rv;
+	DeviceIOIterator					io;
 
 	if((method != "POST") && (method != "GET"))
 		return(http_error(connection, MHD_HTTP_METHOD_NOT_ALLOWED, "Method not allowed"));
 
-	if((it = variables.data.find("output")) == variables.data.end())
-		return(http_error(connection, MHD_HTTP_BAD_REQUEST, "Missing value: output"));
-
-	output = it->second;
+	if((it = variables.data.find("io")) == variables.data.end())
+		return(http_error(connection, MHD_HTTP_BAD_REQUEST, "Missing value: io"));
+	id = it->second;
 
 	if((it = variables.data.find("value")) == variables.data.end())
 		return(http_error(connection, MHD_HTTP_BAD_REQUEST, "Missing value: value"));
-
 	value = it->second;
 
 	device->lock();
 
+	if((io = device->find(id)) == device->end())
+	{
+		device->unlock();
+		return(http_error(connection, MHD_HTTP_BAD_REQUEST, string("Bad value: io: ") + id));
+	}
+
 	try
 	{
-		device->write(lexical_cast<int>(output), lexical_cast<int>(value));
+		device->resampling(io, lexical_cast<int>(value));
 		rv = "OK";
 		error = "OK";
 	}
@@ -212,7 +263,117 @@ int HttpServer::page_dispatcher_write(MHD_Connection * connection, const string 
 
 	device->unlock();
 
-	data = "<p>[" + rv + "] write " + output + " = " + value + ": " + error + "</p>\n";
+	data = "<p>[" + rv + "] resampling " + id + " = " + value + ": " + error + "</p>\n";
+
+	return(send_html(connection, "/resampling", MHD_HTTP_OK, data, 10, "/"));
+}
+
+int HttpServer::page_dispatcher_read(MHD_Connection * connection, const string & method, ConnectionData *, const KeyValues & variables) const throw()
+{
+	string_string_map::const_iterator	it;
+	string								id;
+	string								data;
+	string								value;
+	string								error = "OK";
+	DeviceIOIterator					io;
+
+	if((method != "POST") && (method != "GET"))
+		return(http_error(connection, MHD_HTTP_METHOD_NOT_ALLOWED, "Method not allowed"));
+
+	if((it = variables.data.find("io")) == variables.data.end())
+		return(http_error(connection, MHD_HTTP_BAD_REQUEST, "Missing value: io"));
+
+	id = it->second;
+
+	device->lock();
+
+	if((io = device->find(id)) == device->end())
+	{
+		device->unlock();
+		return(http_error(connection, MHD_HTTP_BAD_REQUEST, string("Bad value: io: ") + id));
+	}
+
+	try
+	{
+		value = lexical_cast<string>(device->read(io));
+	}
+	catch(string e)
+	{
+		error = e;
+		value = "ERROR";
+	}
+	catch(bad_lexical_cast e)
+	{
+		error = string("parameter error: ") + e.what();
+		value = "ERROR";
+	}
+	catch(...)
+	{
+		error = "generic error";
+		value = "ERROR";
+	}
+
+	device->unlock();
+
+	data = "<p>[" + value + "] read " + id + " = " + value + ": " + error + "</p>\n";
+
+	return(send_html(connection, "/read", MHD_HTTP_OK, data, 10, "/"));
+}
+
+int HttpServer::page_dispatcher_write(MHD_Connection * connection, const string & method, ConnectionData *, const KeyValues & variables) const throw()
+{
+	string_string_map::const_iterator	it;
+	string								id;
+	string								value;
+	string								error;
+	string								data;
+	string								rv;
+	DeviceIOIterator					io;
+
+	if((method != "POST") && (method != "GET"))
+		return(http_error(connection, MHD_HTTP_METHOD_NOT_ALLOWED, "Method not allowed"));
+
+	if((it = variables.data.find("io")) == variables.data.end())
+		return(http_error(connection, MHD_HTTP_BAD_REQUEST, "Missing value: io"));
+	id = it->second;
+
+	if((it = variables.data.find("value")) == variables.data.end())
+		return(http_error(connection, MHD_HTTP_BAD_REQUEST, "Missing value: value"));
+	value = it->second;
+
+	device->lock();
+
+	if((io = device->find(id)) == device->end())
+	{
+		device->unlock();
+		return(http_error(connection, MHD_HTTP_BAD_REQUEST, string("Bad value: io: ") + id));
+	}
+
+	try
+	{
+		device->write(io, lexical_cast<double>(value));
+		rv = "OK";
+		error = "OK";
+	}
+	catch(string e)
+	{
+		rv = "ERROR";
+		error = string("ERROR: ") + e;
+	}
+	catch(bad_lexical_cast e)
+	{
+		rv = "ERROR";
+		error = string("ERROR: parameter error: ") + e.what();
+	}
+	catch(...)
+	{
+		rv = "ERROR";
+		error = "generic error";
+	}
+
+	device->unlock();
+
+	data = "<p>[" + rv + "] write " + id + " = " + value + ": " + error + "</p>\n";
 
 	return(send_html(connection, "/write", MHD_HTTP_OK, data, 10, "/"));
 }
@@ -276,157 +437,43 @@ int HttpServer::page_dispatcher_stylecss(MHD_Connection * connection, const stri
 		return(http_error(connection, MHD_HTTP_METHOD_NOT_ALLOWED, "Method not allowed"));
 
 	data += "\n"
-".ge1		{\n"
-"			border: 2px inset #eee;\n"
+"table	{\n"
+"			border: 2px outset #eee;\n"
 "			background-color: #ddd;\n"
 "			text-align: center;\n"
 "}\n"
-".ai1		{\n"
-"			border: 2px inset #fff;\n"
-"			float: left;\n"
-"			width: 160pt;\n"
-"			background-color: #eee;\n"
-"			margin: 4px 4px 4px 0px;\n"
+"td.title {\n"
+"			border: 2px inset #eee;\n"
+"			background-color: #ddd;\n"
+"			margin: 0px 0px 0px 0px;\n"
 "			text-align: center;\n"
+"			font-weight: bold;\n"
 "}\n"
-".ai2		{\n"
-"			border-top: 1px solid #ccc;\n"
-"			height: 18pt;\n"
-"			clear: both;\n"
-"}\n"
-".ai3		{\n"
-"			border-right: 1px solid #ccc;\n"
-"			float: left;\n"
-"			height: 18pt;\n"
-"			width: 40pt;\n"
-"			text-align: right;\n"
-"			margin: 0px;\n"
-"			padding: 0px 4px 0px 0px;\n"
-"}\n"
-".ai4		{\n"
-"			border: 0px solid cyan;\n"
-"			float: left;\n"
-"			height: 18pt;\n"
-"			width: 68pt;\n"
-"			text-align: right;\n"
-"}\n"
-".ai5		{\n"
-"			width: 20pt;\n"
-"			text-align: right;\n"
-"			background-color: #f4f4f4;\n"
-"			border: 2px inset #dadada;\n"
-"			margin: 0px;\n"
-"			padding: 0px;\n"
-"			font-size: 75%;\n"
-"}\n"
-".ao1		{\n"
-"			border: 2px inset #fff;\n"
-"			float: left;\n"
-"			width: 170pt;\n"
-"			background-color: #eee;\n"
-"			margin: 4px 4px 4px 0px;\n"
+"td.heading {\n"
+"			border: 2px inset #eee;\n"
+"			background-color: #ddd;\n"
+"			margin: 0px 0px 0px 0px;\n"
 "			text-align: center;\n"
+"			font-weight: bold;\n"
 "}\n"
-".ao2		{\n"
-"			border-top: 1px solid #ccc;\n"
-"			clear: both;\n"
+"td.l {\n"
+"			border: 2px inset #eee;\n"
+"			background-color: #ddd;\n"
+"			margin: 0px 0px 0px 0px;\n"
+"			text-align: left;\n"
 "}\n"
-".ao3		{\n"
-"			border-right: 1px solid #ccc;\n"
-"			float: left;\n"
-"			height: 18pt;\n"
-"			width: 60pt;\n"
-"			text-align: right;\n"
-"			margin: 0px;\n"
-"			padding: 0px 4px 0px 0px;\n"
-"}\n"
-".ao4		{\n"
-"			border: 0px solid cyan;\n"
-"			float: left;\n"
-"			height: 18pt;\n"
-"			width: 100pt;\n"
+"td {\n"
+"			border: 2px inset #eee;\n"
+"			background-color: #ddd;\n"
+"			margin: 0px 0px 0px 0px;\n"
 "			text-align: right;\n"
 "}\n"
-".ao5		{\n"
-"			width: 20pt;\n"
-"			text-align: right;\n"
-"			background-color: #f4f4f4;\n"
-"			border: 2px inset #dadada;\n"
-"			margin: 0px;\n"
-"			padding: 0px;\n"
-"			font-size: 75%;\n"
-"}\n"
-".di1		{\n"
-"			border: 2px inset #fff;\n"
-"			float: left;\n"
-"			width: 106pt;\n"
+".input {\n"
+"			width: 40px;\n"
+"			border: 2px inset #eee;\n"
 "			background-color: #eee;\n"
-"			margin: 4px 4px 4px 0px;\n"
-"			text-align: center;\n"
-"}\n"
-".di2		{\n"
-"			border-top: 1px solid #ccc;\n"
-"			clear: both;\n"
-"}\n"
-".di3		{\n"
-"			border-right: 1px solid #ccc;\n"
-"			float: left;\n"
-"			height: 19pt;\n"
-"			width: 12pt;\n"
+"			margin: 0px 0px 0px 0px;\n"
 "			text-align: right;\n"
-"			margin: 0px;\n"
-"			padding: 0px 4px 0px 0px;\n"
-"}\n"
-".di4		{\n"
-"			border: 0px solid red;\n"
-"}\n"
-".do1		{\n"
-"			border: 2px inset #fff;\n"
-"			float: left;\n"
-"			width: 120pt;\n"
-"			background-color: #eee;\n"
-"			margin: 4px 4px 4px 0px;\n"
-"			text-align: center;\n"
-"}\n"
-".do2		{\n"
-"			border-top: 1px solid #ccc;\n"
-"			clear: both;\n"
-"}\n"
-".do3		{\n"
-"			border-right: 1px solid #ccc;\n"
-"			float: left;\n"
-"			height: 18pt;\n"
-"			width: 12pt;\n"
-"			text-align: right;\n"
-"			margin: 0px;\n"
-"			padding: 0px 4px 0px 0px;\n"
-"}\n"
-".do4		{\n"
-"			border: 0px solid red;\n"
-"}\n"
-".dc1		{\n"
-"			border: 2px inset #fff;\n"
-"			float: left;\n"
-"			width: 150pt;\n"
-"			background-color: #eee;\n"
-"			margin: 4px 4px 4px 0px;\n"
-"			text-align: center;\n"
-"}\n"
-".dc2		{\n"
-"			border-top: 1px solid #ccc;\n"
-"			clear: both;\n"
-"}\n"
-".dc3		{\n"
-"			border-right: 1px solid #ccc;\n"
-"			float: left;\n"
-"			height: 18pt;\n"
-"			width: 34pt;\n"
-"			text-align: right;\n"
-"			margin: 0px;\n"
-"			padding: 0px;\n"
-"}\n"
-".dc4		{\n"
-"			border: 0px solid red;\n"
 "}\n"
 ;
 	return(send_raw(connection, MHD_HTTP_OK, data, "text/css"));

@@ -7,21 +7,7 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <poll.h>
-
-DeviceElv::DeviceElv(string device_node, int) throw(string) : Device()
-{
-	if(device_node == "")
-		device_node = "/dev/ttyUSB1";
-
-	_device_node	= device_node;
-	_device_fd		= -1;
-	_testinput		= 0;
-}
-
-DeviceElv::~DeviceElv() throw()
-{
-	__close();
-}
+#include <math.h>
 
 int DeviceElv::_open() throw()
 {
@@ -68,8 +54,6 @@ int DeviceElv::_open() throw()
 
     if(tcsetattr(fd, TCSANOW, &tio) == 1)
 		return(-1);
-
-	_init = false;
 
 	return(fd);
 }
@@ -131,7 +115,7 @@ string DeviceElv::_command(string cmd, int timeout) throw()
 
 			if(pfd.revents & POLLIN)
 			{
-				len = read(_device_fd, buffer, sizeof(buffer));
+				len = ::read(_device_fd, buffer, sizeof(buffer));
 
 				if(_debug)
 					vlog("clearing backlog, try %d, cleared %d bytes\n", attempt1, len);
@@ -140,7 +124,7 @@ string DeviceElv::_command(string cmd, int timeout) throw()
 
 		vlog("write: %s\n", cmd.c_str());
 
-		if(write(_device_fd, cmd.c_str(), cmd.length()) != (ssize_t)cmd.length())
+		if(::write(_device_fd, cmd.c_str(), cmd.length()) != (ssize_t)cmd.length())
 		{
 			if(_debug)
 				vlog("write error\n");
@@ -174,7 +158,7 @@ string DeviceElv::_command(string cmd, int timeout) throw()
 
 			if(pfd.revents & POLLIN)
 			{
-				len = read(_device_fd, buffer, sizeof(buffer) - 1);
+				len = ::read(_device_fd, buffer, sizeof(buffer) - 1);
 				buffer[len] = 0;
 
 				//if(_debug)
@@ -200,46 +184,6 @@ retry:
 		vlog("DeviceElv::_command:i/o error, giving up");
 
 	return(rv);
-}
-
-string DeviceElv::__device_name() const
-{
-	return(string("ELV USB-I2C"));
-}
-
-int DeviceElv::__analog_inputs() const
-{
-	vlog("analog_inputs\n");
-	return(2);
-}
-
-int DeviceElv::__analog_input_max() const
-{
-	vlog("analog_input_max\n");
-	return(10000);
-}
-
-int DeviceElv::__read_analog_input(int input) throw(string)
-{
-	vlog("__read_analog_input\n");
-	_testinput = (_testinput + input + 1) % (10000);
-	return(_testinput);
-}
-
-void DeviceElv::__open() throw(string)
-{
-    if(_device_fd != -1)
-        throw(string("DeviceElv::open: device already open"));
-
-	__update_inputs();
-}
-
-void DeviceElv::__close() throw()
-{
-	if(_device_fd > 0)
-		_close(_device_fd);
-
-	_device_fd = -1;
 }
 
 bool DeviceElv::_parse_digipicco(string str, int &value1, int &value2) throw()
@@ -306,32 +250,147 @@ bool DeviceElv::_detect_digipicco() throw()
 	return(true);
 }
 
-void DeviceElv::__update_inputs() throw(string)
+DeviceElv::DeviceElv(string device_node, int) throw(string) : Device()
 {
-	vlog("update_inputs\n");
+	if(device_node == "")
+		device_node = "/dev/ttyUSB1";
 
-	if(!_init)
-	{
-		string rv;
-		vlog("perform init\n");
-
-		vlog("reset\n");
-		rv = _command("z4b", 2000);
-		vlog("result: \"%s\"\n", rv.c_str());
-
-		if(rv.find("ELV USB-I2C-Interface v1.6 (Cal:44)") == string::npos)
-			throw(string("interface ELV not found"));
-
-		_detected_digipicco = _detect_digipicco();
-
-		vlog("digipicco %sdetected\n", _detected_digipicco ? "" : "not ");
-
-		_init = true;
-	}
-
+	_device_node		= device_node;
+	_device_fd			= -1;
 }
 
-void DeviceElv::debug(bool onoff)
+DeviceElv::~DeviceElv() throw()
 {
-	_debug = onoff;
+	__close();
+}
+
+string DeviceElv::__device_name() const throw()
+{
+	return(string("ELV USB-I2C"));
+}
+
+void DeviceElv::__open() throw(string)
+{
+    if(_device_fd >= 0)
+        throw(string("DeviceElv::open: device already open"));
+
+	_device_fd = _open();
+}
+
+void DeviceElv::__close() throw()
+{
+	if(_device_fd >= 0)
+	{
+		_close(_device_fd);
+		_device_fd = -1;
+	}
+}
+
+void DeviceElv::__init() throw(string)
+{
+	string rv;
+	vlog("perform init\n");
+
+	vlog("reset\n");
+	rv = _command("z4b", 2000);
+	vlog("result: \"%s\"\n", rv.c_str());
+
+	if(rv.find("ELV USB-I2C-Interface v1.6 (Cal:44)") == string::npos)
+		throw(string("interface ELV not found"));
+
+	if(_detect_digipicco())
+	{
+		vlog("digipicco detected\n");
+
+		DeviceIO io;
+
+		io.name					= "digipicco temperature";
+		io.id					= (int)_ios.size();
+		io.type					= DeviceIO::analog;
+		io.direction			= DeviceIO::input;
+		io.lower_boundary		= -40.0;
+		io.upper_boundary		= 125.0;
+
+		_ios.push_back(io);
+
+		io.name					= "digipicco humidity";
+		io.id					= (int)_ios.size();
+		io.type					= DeviceIO::analog;
+		io.direction			= DeviceIO::input;
+		io.lower_boundary		= 0.0;
+		io.upper_boundary		= 100.0;
+
+		_ios.push_back(io);
+	}
+	else
+		vlog("digipicco not detected\n");
+}
+
+void DeviceElv::__update(DeviceIOIterator io) throw(string)
+{
+	string	rv;
+	int		attempt;
+	int		value1, value2;
+	double	temperature, humidity;
+
+	vlog("update %s\n", io->name.c_str());
+
+	if((io->name != "digipicco humidity") &&  (io->name != "digipicco temperature"))
+		return;
+
+	for(attempt = 25; attempt > 0; attempt--)
+	{
+		vlog("sf0\n");
+		rv = _command("sf0");
+		vlog("result: \"%s\"\n\n", rv.c_str());
+
+		vlog("r04p\n");
+		rv = _command("r04p");
+		vlog("result: \"%s\"\n\n", rv.c_str());
+
+		if(rv.find("Err:TWI READ") == string::npos)
+		{
+			vlog("Err:TWI READ not found\n");
+			continue;
+		}
+
+		vlog("r04p\n");
+		rv = _command("r04p");
+		vlog("result: \"%s\"\n\n", rv.c_str());
+
+		if(!_parse_digipicco(rv, value1, value2))
+		{
+			vlog("output does not match\n");
+			continue;
+		}
+
+		if((value1 == 0xffff) && (value2 == 0xffff))
+		{
+			vlog("answer out of range\n");
+			continue;
+		}
+
+		temperature = (((double)value2 / 32767) * 165) - 40;
+		humidity = (double)value1 / 327.67;
+
+		break;
+	}
+
+	if(attempt == 0)
+	{
+		vlog("attempt = 0\n");
+		return;
+	}
+
+	if(io->name == "digipicco temperature")
+	{
+		io->value = temperature;
+		io->stamp_updated = time(0);
+	}
+
+	if(io->name == "digipicco humidity")
+	{
+		io->value = humidity;
+		io->stamp_updated = time(0);
+	}
 }

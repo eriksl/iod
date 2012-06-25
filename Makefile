@@ -7,22 +7,22 @@ DEPS	= .iod.d .device.d .http_server.d .http_page.d .syslog.d
 ifeq ($(TARGET), x86_64)
 	ENABLE_DEVICE_K8055		= 0
 	ENABLE_DEVICE_HB627		= 0
-	ENABLE_DEVICE_ELV		= 0
+	ENABLE_DEVICE_ELV		= 1
 	CPPFLAGS				+= -DMHD_mode_multithread
 	LDLIBS					+= -Wl,-Bstatic -lmicrohttpd -Wl,-Bdynamic -lpthread
 endif
 
 ifeq ($(TARGET), i386)
-	ENABLE_DEVICE_K8055		= 1
-	ENABLE_DEVICE_HB627		= 1
+	ENABLE_DEVICE_K8055		= 0
+	ENABLE_DEVICE_HB627		= 0
 	ENABLE_DEVICE_ELV		= 1
 	CPPFLAGS				+= -DMHD_mode_multithread
 	LDLIBS					+= -Wl,-Bstatic -lmicrohttpd -Wl,-Bdynamic -lpthread
 endif
 
 ifeq ($(TARGET), mipsel)
-	ENABLE_DEVICE_K8055		= 1
-	ENABLE_DEVICE_HB627		= 1
+	ENABLE_DEVICE_K8055		= 0
+	ENABLE_DEVICE_HB627		= 0
 	ENABLE_DEVICE_ELV		= 1
 	CPPFLAGS				+= -DMHD_mode_multithread
 	LDLIBS					+= -Wl,-Bstatic -lmicrohttpd -Wl,-Bdynamic -lpthread

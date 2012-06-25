@@ -97,6 +97,8 @@ class HttpServer
 		int page_dispatcher_root		(MHD_Connection *, const string & method, ConnectionData * con_cls, const KeyValues & variables) const throw();
 		int page_dispatcher_debug		(MHD_Connection *, const string & method, ConnectionData * con_cls, const KeyValues & variables) const throw();
 		int page_dispatcher_stylecss	(MHD_Connection *, const string & method, ConnectionData * con_cls, const KeyValues & variables) const throw();
+		int page_dispatcher_update		(MHD_Connection *, const string & method, ConnectionData * con_cls, const KeyValues & variables) const throw();
+		int page_dispatcher_resampling	(MHD_Connection *, const string & method, ConnectionData * con_cls, const KeyValues & variables) const throw();
 		int page_dispatcher_read		(MHD_Connection *, const string & method, ConnectionData * con_cls, const KeyValues & variables) const throw();
 		int page_dispatcher_write		(MHD_Connection *, const string & method, ConnectionData * con_cls, const KeyValues & variables) const throw();
 

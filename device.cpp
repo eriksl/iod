@@ -1,7 +1,12 @@
 #include "device.h"
 
+#include <stdlib.h>
+
 #include <deque>
 using std::deque;
+
+#include <boost/lexical_cast.hpp>
+using boost::lexical_cast;
 
 #include <numeric>
 using std::accumulate;
@@ -9,6 +14,7 @@ using std::accumulate;
 Device::Device() throw(string)
 {
 	_isopen			= false;
+	_isinit			= false;
 	_debug			= false;
 	_mutex_valid	= false;
 	pthread_mutex_init(&_mutex, 0);
@@ -33,6 +39,12 @@ void Device::open() throw(string)
 
 	__open();
 	_isopen = true;
+
+	if(!_isinit)
+	{
+		__init();
+		_isinit = true;
+	}
 }
 
 void Device::close() throw()
@@ -53,69 +65,66 @@ void Device::debug(bool onoff) throw()
 	_debug = onoff;
 }
 
-void Device::_update(DeviceIO & io) throw(string)
+void Device::_update(DeviceIOIterator io) throw(string)
 {
-	if((io.type == DeviceIO::no_type) || (io.direction == DeviceIO::no_direction))
+	if((io->type == DeviceIO::no_type) || (io->direction == DeviceIO::no_direction))
 		throw(string("Device::_update: i/o uninitialised"));
 
 	__update(io);
+
+	io->stamp_updated = time(0);
 }
 
-double Device::read(DeviceIO & io, bool upd) throw(string)
+double Device::read(DeviceIOIterator io) throw(string)
 {
-	if((io.type == DeviceIO::no_type) || (io.direction == DeviceIO::no_direction))
+	if((io->type == DeviceIO::no_type) || (io->direction == DeviceIO::no_direction))
 		throw(string("Device::read: i/o uninitialised"));
 
-	if((io.direction != DeviceIO::input) && (io.direction != DeviceIO::io))
-		throw(string("Device::read: cannot read from this i/o"));
+	io->stamp_read = time(0);
 
-	if(upd)
-		_update(io);
-
-	return(io.value);
+	return(io->value);
 }
 
-double Device::read(int id, bool upd) throw(string)
+void Device::write(DeviceIOIterator io, double value) throw(string)
 {
-	if((id < 0) || (id > (int)_ios.size()))
-		throw(string("Device::read: input id out of range"));
-
-	return(read(_ios[id], upd));
-}
-
-void Device::write(DeviceIO & io, double value, bool upd) throw(string)
-{
-	if((io.type == DeviceIO::no_type) || (io.direction == DeviceIO::no_direction))
+	if((io->type == DeviceIO::no_type) || (io->direction == DeviceIO::no_direction))
 		throw(string("Device::write: i/o uninitialised"));
 
-	if((io.direction != DeviceIO::output) && (io.direction != DeviceIO::io))
-		throw(string("Device::write: cannot write to this i/o"));
+	if(value < io->lower_boundary)
+		throw(string("Device::write: value too low"));
 
-	io.value = value;
+	if(value > io->upper_boundary)
+		throw(string("Device::write: value too high"));
 
-	if(upd)
-		_update(io);
+	io->stamp_set	= time(0);
+	io->value		= value;
 }
 
-void Device::write(int id, double value, bool upd) throw(string)
+void Device::resampling(DeviceIOIterator io, int value) throw(string)
 {
-	if((id < 0) || (id > (int)_ios.size()))
-		throw(string("Device::write: input id out of range"));
+	if((io->type == DeviceIO::no_type) || (io->direction == DeviceIO::no_direction))
+		throw(string("Device::resampling: i/o uninitialised"));
 
-	write(_ios[id], value, upd);
+	if(value < 0)
+		throw(string("Device::resampling: value too low"));
+
+	if(value > 256)
+		throw(string("Device::resampling: value too high"));
+
+	io->resampling = value;
 }
 
-void Device::update(DeviceIO & io) throw(string)
+void Device::update(DeviceIOIterator io) throw(string)
 {
 	return(_update(io));
 }
 
-void Device::update(int id) throw(string)
+void Device::update() throw(string)
 {
-	if((id < 0) || (id > (int)_ios.size()))
-		throw(string("Device::update: input id out of range"));
+	DeviceIOs::iterator io;
 
-	update(_ios[id]);
+	for(io = _ios.begin(); io != _ios.end(); io++)
+		_update(io);
 }
 
 void Device::lock() throw(string)
@@ -134,12 +143,46 @@ void Device::unlock() throw(string)
 		throw(string("Device::unlock:: mutex invalid"));
 }
 
-DeviceIOIterator Device::begin() const throw(string)
+DeviceIOIterator Device::begin() throw(string)
 {
 	return(_ios.begin());
 }
 
-DeviceIOIterator Device::end() const throw(string)
+DeviceIOIterator Device::end() throw(string)
 {
 	return(_ios.end());
+}
+
+DeviceIOIterator Device::find(int ix) throw(string)
+{
+	if((ix < 0) || (ix >= (int)_ios.size()))
+		throw(string("Device::find: index out of range"));
+
+	return(begin() + ix);
+}
+
+DeviceIOIterator Device::find(string name) throw(string)
+{
+	DeviceIOIterator i;
+
+	int numeric = strtoul(name.c_str(), 0, 10);
+	string text	= lexical_cast<string>(numeric);
+
+	if(name == text)
+	{
+		try
+		{
+			return(find(numeric));
+		}
+		catch(...)
+		{
+			return(end());
+		}
+	}
+
+	for(i = begin(); i != end(); i++)
+		if(i->name == name)
+			return(i);
+
+	return(end());
 }

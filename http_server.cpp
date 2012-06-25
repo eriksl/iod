@@ -20,6 +20,8 @@ HttpServer::HttpServer(Device * dev, int tcp_port, bool multithread_in) throw(st
 	page_dispatcher_map["/"]			=	&HttpServer::page_dispatcher_root;
 	page_dispatcher_map["/debug"]		=	&HttpServer::page_dispatcher_debug;
 	page_dispatcher_map["/style.css"]	=	&HttpServer::page_dispatcher_stylecss;
+	page_dispatcher_map["/update"]		=	&HttpServer::page_dispatcher_update;
+	page_dispatcher_map["/resampling"]	=	&HttpServer::page_dispatcher_resampling;
 	page_dispatcher_map["/read"]		=	&HttpServer::page_dispatcher_read;
 	page_dispatcher_map["/write"]		=	&HttpServer::page_dispatcher_write;
 
