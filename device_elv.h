@@ -18,7 +18,7 @@ class DeviceElv : public Device
 		bool	_read_tsl2550(int fd, int addr, int &lux)							throw();
 		int		_open()																throw(string);
 		int		_close(int fd)														throw();
-		string	_command(int fd, string cmd, int timeout = 500, int chunks = 1)		throw(string);
+		string	_command(int fd, string cmd, int timeout = 200, int chunks = 1)		throw(string);
 
 	protected:
 

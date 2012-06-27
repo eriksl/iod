@@ -195,28 +195,28 @@ static int timespec_diff(timespec start, timespec end)
 	return((temp.tv_sec * 1000) + (temp.tv_nsec / 1000000));
 }
 
-static bool _tsl2550_adccount(int &val, bool &overflow)
+static bool _tsl2550_adccount(int in, int &out, bool &overflow)
 {
-	bool	valid	= !!(val & 0x80);
-	int		chord	= (val & 0x70) >> 4;
-	int		step	= (val & 0x0f);
+	bool	valid	= !!(in & 0x80);
+	int		chord	= (in & 0x70) >> 4;
+	int		step	= (in & 0x0f);
 
 	if(!valid)
 	{
-		vlog("_tsl2550_adccount: invalid value\n");
+		//dlog("_tsl2550_adccount: invalid value\n");
 		return(false);
 	}
 
-	if((val & 0x7f) == 0x7f)
+	if((in & 0x7f) == 0x7f)
 		overflow = true;
 
 	int	chordval	= 16.5 * ((1 << chord) - 1);
 	int	stepval		= step * (1 << chord);
 
-	val = chordval + stepval;
+	out = chordval + stepval;
 
-	dlog("_tsl2550_adccount: valid = %d, chord = %d, step = %d, chordval = %d, stepval = %d, count = %d, overflow = %d\n",
-			valid, chord, step, chordval, stepval, val, (int)overflow);
+	//dlog("_tsl2550_adccount: valid = %d, chord = %d, step = %d, chordval = %d, stepval = %d, count = %d, overflow = %d\n",
+			//valid, chord, step, chordval, stepval, out, (int)overflow);
 
 	return(true);
 }
@@ -359,28 +359,28 @@ bool DeviceElv::_parse_bytes(string str, int amount, vector<int> & value) throw(
 	}
 	match_string += "\\s*";
 
-	printf("match_bytes(%d) \"%s\" =~ \"%s\"\n", amount, str.c_str(), match_string.c_str());
+	//dlog("match_bytes(%d) \"%s\" =~ \"%s\"\n", amount, str.c_str(), match_string.c_str());
 
 	regex e(match_string);
 
 	if(!regex_match(str, s, e))
 	{
-		printf("no match\n");
+		//dlog("no match\n");
 		return(false);
 	}
 
 	if(s.size() != (amount + 1))
 	{
-		printf("size wrong\n");
+		//dlog("size wrong\n");
 		return(false);
 	}
 
 	for(i = 0; i < amount; i++)
 	{
 		sval[i] = string(s[i + 1]);
-		dlog("sval[%d] = \"%s\"  ", i, sval[i].c_str());
+		//dlog("sval[%d] = \"%s\"  ", i, sval[i].c_str());
 	}
-	dlog("\n");
+	//dlog("\n");
 
 	for(i = 0; i < amount; i++)
 	{
@@ -389,9 +389,9 @@ bool DeviceElv::_parse_bytes(string str, int amount, vector<int> & value) throw(
 		conv >> value[i];
 	}
 
-	for(i = 0; i < amount; i++)
-		vlog("value[%d] = %x  ", i, value[i]);
-	dlog("\n");
+	//for(i = 0; i < amount; i++)
+		//vlog("value[%d] = %x  ", i, value[i]);
+	//dlog("\n");
 
 	return(true);
 }
@@ -410,8 +410,7 @@ bool DeviceElv::_read_digipicco(int fd, int addr, double & temperature, double &
 		cmd.str("");
 		cmd << "s " << hex << setfill('0') << setw(2) << addr << " p";
 		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n\n", rv.c_str());
+		_command(fd, cmd.str(), 200, 0);
 
 		// r 04 p
 		cmd.str("");
@@ -421,7 +420,7 @@ bool DeviceElv::_read_digipicco(int fd, int addr, double & temperature, double &
 		{
 			dlog("> %s\n", cmd.str().c_str());
 			rv = _command(fd, cmd.str());
-			dlog("< \"%s\"\n\n", rv.c_str());
+			dlog("< \"%s\"\n", rv.c_str());
 
 			if(_parse_bytes(rv, 4, v))
 				break;
@@ -444,8 +443,8 @@ bool DeviceElv::_read_digipicco(int fd, int addr, double & temperature, double &
 	v1	= (v[0] << 8) | v[1];
 	v2	= (v[2] << 8) | v[3];
 
-	dlog("temperature = 0x%x, humidity = 0x%x\n", v2, v1);
-	dlog("temperature = %d, humidity = %d\n", v2, v1);
+	//dlog("temperature = 0x%x, humidity = 0x%x\n", v2, v1);
+	//dlog("temperature = %d, humidity = %d\n", v2, v1);
 
 	if((v1 == 0xffff) && (v2 == 0xffff))
 	{
@@ -466,29 +465,26 @@ bool DeviceElv::_read_tsl2550(int fd, int addr, int &lux) throw()
 	ostringstream	cmd;
 	string			rv;
 	vector<int>		v;
-	int				ch0s, ch0e, ch1s, ch1e;
+	int				ch0s, ch1s, ch0e, ch1e;
+	int				cch0s, cch1s, cch0e, cch1e;
 	int				ls, le;
 	bool			overflows, overflowe;
+	int				conversiontimeout = 1000;
 
 	try
 	{
-		// s 72 03 p // startup
+		// <72> 03 // startup
 		cmd.str("");
 		cmd << "s " << hex << setfill('0') << setw(2) << addr << " 03 p";
 		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", cmd.str().c_str());
-		if(rv.find("Err") != string::npos)
-		{
-			vlog("_read_tsl2550: cmd set returns error\n");
-			return(false);
-		}
+		rv = _command(fd, cmd.str(), conversiontimeout, 2);
+		dlog("< %s\n\n", rv.c_str());
 
-		// r 01 p // read command register
+		// read command register
 		cmd.str("r 01 p");
 		dlog("> %s\n", cmd.str().c_str());
 		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", rv.c_str());
+		dlog("< %s\n", rv.c_str());
 		if(!_parse_bytes(rv, 1, v))
 		{
 			vlog("_read_tsl2550: cmd read error\n");
@@ -496,37 +492,21 @@ bool DeviceElv::_read_tsl2550(int fd, int addr, int &lux) throw()
 		}
 		if(v[0] != 3)
 		{
-			vlog("_read_tsl2550: cmd read does not return 03\n");
+			vlog("_read_tsl2550: cmd read does not return 0x03\n");
 			return(false);
 		}
 		
-		// w 18 p // select standard range mode
-		cmd.str("w 18 p");
+		// 18 43 // select standard range mode, channel 0
+		cmd.str("w 18 w 43 p");
 		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", rv.c_str());
-		if(rv.find("Err") != string::npos)
-		{
-			vlog("_read_tsl2550: set standard range mode returns error\n");
-			return(false);
-		}
+		rv = _command(fd, cmd.str(), conversiontimeout, 2);
+		dlog("< %s\n\n", rv.c_str());
 		
-		// w 43 p // select adc channel 0
-		cmd.str("w 43 p");
-		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", rv.c_str());
-		if(rv.find("Err") != string::npos)
-		{
-			vlog("_read_tsl2550: set adc channel 0/standard returns error\n");
-			return(false);
-		}
-
-		// r 01 p // read ch0s
+		// read ch0s
 		cmd.str("r 01 p");
 		dlog("> %s\n", cmd.str().c_str());
 		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", rv.c_str());
+		dlog("< %s\n\n", rv.c_str());
 		if(!_parse_bytes(rv, 1, v))
 		{
 			vlog("_read_tsl2550: read channel 0/standard read error\n");
@@ -534,22 +514,17 @@ bool DeviceElv::_read_tsl2550(int fd, int addr, int &lux) throw()
 		}
 		ch0s = v[0];
 
-		// w 83 p // select adc channel 1
-		cmd.str("w 83 p");
-		dlog("> %s\n", cmd.str().c_str());
+		// 18 83 // select standard range mode, channel 1
+		cmd.str("w 18 w 83 p");
+		dlog("> %s\n", cmd.str().c_str(), conversiontimeout, 2);
 		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", rv.c_str());
-		if(rv.find("Err") != string::npos)
-		{
-			vlog("_read_tsl2550: set adc channel 1/standard returns error\n");
-			return(false);
-		}
+		dlog("< %s\n\n", rv.c_str());
 		
-		// r 01 p // read ch1s
+		// read ch1s
 		cmd.str("r 01 p");
 		dlog("> %s\n", cmd.str().c_str());
 		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", rv.c_str());
+		dlog("< %s\n\n", rv.c_str());
 		if(!_parse_bytes(rv, 1, v))
 		{
 			vlog("_read_tsl2550: read channel 1/standard read error\n");
@@ -557,34 +532,17 @@ bool DeviceElv::_read_tsl2550(int fd, int addr, int &lux) throw()
 		}
 		ch1s = v[0];
 
-	
-		// w 1d p // select extended range mode
-		cmd.str("w 1d p");
+		// 1d 43 // select extended range mode, channel 0
+		cmd.str("w 1d w 43 p");
 		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", rv.c_str());
-		if(rv.find("Err") != string::npos)
-		{
-			vlog("_read_tsl2550: set extended range mode returns error\n");
-			return(false);
-		}
-		
-		// w 43 p // select adc channel 0
-		cmd.str("w 43 p");
-		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", rv.c_str());
-		if(rv.find("Err") != string::npos)
-		{
-			vlog("_read_tsl2550: set adc channel 0/extended returns error\n");
-			return(false);
-		}
+		rv = _command(fd, cmd.str(), conversiontimeout, 2);
+		dlog("< %s\n", rv.c_str());
 
-		// r 01 p // read ch0e
+		// read ch0e
 		cmd.str("r 01 p");
 		dlog("> %s\n", cmd.str().c_str());
 		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", rv.c_str());
+		dlog("< %s\n", rv.c_str());
 		if(!_parse_bytes(rv, 1, v))
 		{
 			vlog("_read_tsl2550: read channel 0/extended read error\n");
@@ -592,22 +550,17 @@ bool DeviceElv::_read_tsl2550(int fd, int addr, int &lux) throw()
 		}
 		ch0e = v[0];
 
-		// w 83 p // select adc channel 1
-		cmd.str("w 83 p");
+		// 1d 83 // select extended range mode, channel 1
+		cmd.str("w 1d w 83 p");
 		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", rv.c_str());
-		if(rv.find("Err") != string::npos)
-		{
-			vlog("_read_tsl2550: set adc channel 1/extended returns error\n");
-			return(false);
-		}
+		rv = _command(fd, cmd.str(), conversiontimeout, 2);
+		dlog("< %s\n\n", rv.c_str());
 		
-		// r 01 p // read ch1s
+		// read ch1e
 		cmd.str("r 01 p");
 		dlog("> %s\n", cmd.str().c_str());
 		rv = _command(fd, cmd.str());
-		dlog("< \"%s\"\n", rv.c_str());
+		dlog("< %s\n", rv.c_str());
 		if(!_parse_bytes(rv, 1, v))
 		{
 			vlog("_read_tsl2550: read channel 1/extended read error\n");
@@ -621,39 +574,38 @@ bool DeviceElv::_read_tsl2550(int fd, int addr, int &lux) throw()
 		return(false);
 	}
 
-	dlog("ch0s = %d, ch1s = %d, ch0e = %d, ch1e = %d\n", ch0s, ch1s, ch0e, ch1e);
-
 	overflows = overflowe = false;
 
-	if(!_tsl2550_adccount(ch0s, overflows))
+	if(!_tsl2550_adccount(ch0s, cch0s, overflows))
 	{
 		vlog("_read_tsl2550: ch0s invalid\n");
 		return(false);
 	}
 
-	if(!_tsl2550_adccount(ch1s, overflows))
+	if(!_tsl2550_adccount(ch1s, cch1s, overflows))
 	{
 		vlog("_read_tsl2550: ch1s invalid\n");
 		return(false);
 	}
 
-	if(!_tsl2550_adccount(ch0e, overflowe))
+	if(!_tsl2550_adccount(ch0e, cch0e, overflowe))
 	{
 		vlog("_read_tsl2550: ch0e invalid\n");
 		return(false);
 	}
 
-	if(!_tsl2550_adccount(ch1e, overflowe))
+	if(!_tsl2550_adccount(ch1e, cch1e, overflowe))
 	{
 		vlog("_read_tsl2550: ch1e invalid\n");
 		return(false);
 	}
 
-	dlog("ch0s = %d, ch1s = %d, ch0e = %d, ch1e = %d\n",
-			ch0s, ch1s, ch0e, ch1e);
+	dlog("ch0s = %d, ch1s = %d, ch0e = %d, ch1e = %d\n", ch0s, ch1s, ch0e, ch1e);
 
-	ls = _tsl2550_count2lux(ch0s, ch1s, 1);
-	le = _tsl2550_count2lux(ch0e, ch1e, 5);
+	dlog("cch0s = %d, cch1s = %d, cch0e = %d, cch1e = %d\n", cch0s, cch1s, cch0e, cch1e);
+
+	ls = _tsl2550_count2lux(cch0s, cch1s, 1);
+	le = _tsl2550_count2lux(cch0e, cch1e, 5);
 
 	lux = overflows ? le : ls;
 
