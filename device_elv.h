@@ -1,20 +1,10 @@
 #ifndef _device_elv_h
 #define _device_elv_h
 
-#include <stdint.h>
-#include <usb.h>
+#include "device.h"
 
 #include <string>
 using std::string;
-
-#include <bitset>
-using std::bitset;
-
-#include <boost/regex.hpp>
-using boost::regex;
-using boost::smatch;
-
-#include "device.h"
 
 class DeviceElv : public Device
 {
@@ -23,19 +13,18 @@ class DeviceElv : public Device
 		int		_device_fd;
 		string	_device_node;
 
-		int		_open()												throw();
-		void	_close(int fd)										throw();
-		string	_command(string cmd, int timeout = 200)				throw();
-		bool	_detect_digipicco()									throw();
-
-		bool	_parse_digipicco(string, int&, int&)				throw();
+		bool	_parse_bytes(string, int, vector<int> &)							throw();
+		bool	_read_digipicco(int fd, int addr, double &temp, double &hum)		throw();
+		bool	_read_tsl2550(int fd, int addr, int &lux)							throw();
+		int		_open()																throw(string);
+		int		_close(int fd)														throw();
+		string	_command(int fd, string cmd, int timeout = 500, int chunks = 1)		throw(string);
 
 	protected:
 
 		string		__device_name()							const	throw();
-		void		__open()										throw(string);
+		int			__open()										throw(string);
 		void		__close()										throw();
-		void		__init()										throw(string);
 		void		__update(DeviceIOIterator io)					throw(string);
 
 	public:

@@ -4,6 +4,10 @@
 #include <pthread.h>
 #include <sys/socket.h>
 
+#include <sstream>
+#include <iomanip>
+using namespace std;
+
 #include <boost/lexical_cast.hpp>
 using boost::lexical_cast;
 using boost::bad_lexical_cast;
@@ -13,7 +17,9 @@ using boost::bad_lexical_cast;
 
 int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string & method, ConnectionData * con_cls, const KeyValues &) const throw()
 {
-	string	data;
+	string			data;
+	string			value;
+	ostringstream	conv;
 
 	con_cls += 0; // ignore
 
@@ -25,8 +31,8 @@ int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string &
 	try
 	{
 		data += "<table>";
-		data += "<tr><td class=\"title\" colspan=\"12\">" + device->device_name() + "</td></tr>\n";
-		data += "<tr><td class=\"heading\">id</td><td class=\"heading\">name</td><td class=\"heading\">type</td><td class=\"heading\">direction</td><td class=\"heading\">lower</td><td class=\"heading\">upper</td><td class=\"heading\">set</td><td class=\"heading\">read</td><td class=\"heading\">updated</td><td class=\"heading\">resampling</td><td class=\"heading\">value</td><td class=\"heading\">action</td></tr>\n";
+		data += "<tr><td class=\"title\" colspan=\"13\">" + device->device_name() + "</td></tr>\n";
+		data += "<tr><td class=\"heading\">id</td><td class=\"heading\">name</td><td class=\"heading\">address</td><td class=\"heading\">type</td><td class=\"heading\">direction</td><td class=\"heading\">lower</td><td class=\"heading\">upper</td><td class=\"heading\">set</td><td class=\"heading\">read</td><td class=\"heading\">updated</td><td class=\"heading\">resampling</td><td class=\"heading\">value</td><td class=\"heading\">action</td></tr>\n";
 
 		DeviceIOIterator io;
 
@@ -35,6 +41,9 @@ int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string &
 			data += "<tr>";
 			data += "<td>" + lexical_cast<string>(io->id) + "</td>";
 			data += "<td class=\"l\">" + io->name + "</td>";
+			conv.str("");
+			conv << hex << setfill('0') << setw(2) << io->address;
+			data += "<td>" + conv.str() + "</td>";
 			data += "<td>";
 
 			switch(io->type)
@@ -110,6 +119,10 @@ int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string &
 
 				) + "</td>";
 
+			conv.str("");
+			conv << dec << fixed << setprecision(io->precision) << io->value;
+			value = conv.str();
+
 			data += "<td>" +
 				make_simple_form
 				(
@@ -117,7 +130,7 @@ int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string &
 					"td",
 					"io", io->name,
 					"set",
-					"input", "value", lexical_cast<string>(io->value)
+					"input", "value", value
 				) + "</td>";
 
 			data += "<td>" +
@@ -132,7 +145,7 @@ int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string &
 			data += "</tr>\n";
 		}
 
-		data += "<tr><td colspan=\"12\">" +
+		data += "<tr><td colspan=\"13\">" +
 			make_simple_form
 			(
 			 	"post", "/update",
@@ -207,7 +220,7 @@ int HttpServer::page_dispatcher_update(MHD_Connection * connection, const string
 
 	data = "<p>[" + error + "] update " + id + "</p>\n";
 
-	return(send_html(connection, "/update", MHD_HTTP_OK, data, 10, "/"));
+	return(send_html(connection, "/update", MHD_HTTP_OK, data, 1, "/"));
 }
 
 int HttpServer::page_dispatcher_resampling(MHD_Connection * connection, const string & method, ConnectionData *, const KeyValues & variables) const throw()
@@ -265,7 +278,7 @@ int HttpServer::page_dispatcher_resampling(MHD_Connection * connection, const st
 
 	data = "<p>[" + rv + "] resampling " + id + " = " + value + ": " + error + "</p>\n";
 
-	return(send_html(connection, "/resampling", MHD_HTTP_OK, data, 10, "/"));
+	return(send_html(connection, "/resampling", MHD_HTTP_OK, data, 1, "/"));
 }
 
 int HttpServer::page_dispatcher_read(MHD_Connection * connection, const string & method, ConnectionData *, const KeyValues & variables) const throw()
@@ -317,7 +330,7 @@ int HttpServer::page_dispatcher_read(MHD_Connection * connection, const string &
 
 	data = "<p>[" + value + "] read " + id + " = " + value + ": " + error + "</p>\n";
 
-	return(send_html(connection, "/read", MHD_HTTP_OK, data, 10, "/"));
+	return(send_html(connection, "/read", MHD_HTTP_OK, data, 1, "/"));
 }
 
 int HttpServer::page_dispatcher_write(MHD_Connection * connection, const string & method, ConnectionData *, const KeyValues & variables) const throw()
@@ -375,7 +388,7 @@ int HttpServer::page_dispatcher_write(MHD_Connection * connection, const string 
 
 	data = "<p>[" + rv + "] write " + id + " = " + value + ": " + error + "</p>\n";
 
-	return(send_html(connection, "/write", MHD_HTTP_OK, data, 10, "/"));
+	return(send_html(connection, "/write", MHD_HTTP_OK, data, 1, "/"));
 }
 
 int HttpServer::page_dispatcher_debug(MHD_Connection * connection, const string & method, ConnectionData * con_cls, const KeyValues & variables) const throw()

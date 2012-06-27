@@ -9,30 +9,50 @@
 #include <poll.h>
 #include <math.h>
 
-int DeviceElv::_open() throw()
+#include <sstream>
+#include <iomanip>
+using namespace std;
+
+#include <boost/regex.hpp>
+using boost::regex;
+using boost::smatch;
+
+int DeviceElv::_open() throw(string)
 {
 	int				fd;
     int             result;
     struct termios  tio;
 
     if((fd = ::open(_device_node.c_str(), O_RDWR | O_NOCTTY, 0)) < 0)
-		return(-1);
+		throw(string("DeviceElv::_open: cannot open device ") + _device_node);
 
     if(ioctl(fd, TIOCMGET, &result))
-		return(-1);
+	{
+		::close(fd);
+		throw(string("DeviceElv::_open: error in TIOCMGET"));
+	}
 
     result &= ~(TIOCM_DTR | TIOCM_RTS | TIOCM_CTS | TIOCM_DSR);
 
     if(ioctl(fd, TIOCMSET, &result))
-		return(-1);
+	{
+		::close(fd);
+		throw(string("DeviceElv::_open: error in TIOCMSET"));
+	}
 
     result |= (TIOCM_DTR | TIOCM_RTS | TIOCM_CTS | TIOCM_DSR);
 
     if(ioctl(fd, TIOCMSET, &result))
-		return(-1);
+	{
+		::close(fd);
+		throw(string("DeviceElv::_open: error in TIOCMSET"));
+	}
 
     if(tcgetattr(fd, &tio) == 1)
-		return(-1);
+	{
+		::close(fd);
+		throw(string("DeviceElv::_open: error in tcgetattr"));
+	}
 
     tio.c_iflag &= ~(BRKINT | INPCK | INLCR | IGNCR | IUCLC |
                     IXON    | IXOFF | IXANY | IMAXBEL | ISTRIP | ICRNL);
@@ -53,199 +73,591 @@ int DeviceElv::_open() throw()
     cfsetospeed(&tio, B115200);
 
     if(tcsetattr(fd, TCSANOW, &tio) == 1)
-		return(-1);
+	{
+		::close(fd);
+		throw(string("DeviceElv::_open: error in tcsetattr"));
+	}
+
+	dlog("*** reset\n");
+
+	string	rv;
+
+	try
+	{
+		rv = _command(fd, "z 4b", 2000, 2);
+	}
+	catch(string s)
+	{
+		vlog("open: exception during reset: %s\n", s.c_str());
+		::close(fd);
+		throw(string("interface ELV not found"));
+	}
+
+	dlog("result: \"%s\"\n", rv.c_str());
+
+	if(rv.find("ELV USB-I2C-Interface v1.6 (Cal:44)") == string::npos)
+	{
+		vlog("init: id string not recognised\n");
+		::close(fd);
+		throw(string("interface ELV not found"));
+	}
+
+	dlog("*** init\n");
+	_ios.clear();
+
+	double digipicco_humidity, digipicco_temperature;
+
+	if(_read_digipicco(fd, 0xf0, digipicco_temperature, digipicco_humidity))
+	{
+		vlog("digipicco detected at 0xf0\n");
+
+		DeviceIO io;
+
+		io.name					= "digipicco temperature";
+		io.id					= (int)_ios.size();
+		io.address				= 0xf0;
+		io.type					= DeviceIO::analog;
+		io.direction			= DeviceIO::input;
+		io.lower_boundary		= -40.0;
+		io.upper_boundary		= 125.0;
+		io.precision			= 2;
+		io.value				= digipicco_temperature;
+		io.stamp_updated		= time(0);
+
+		_ios.push_back(io);
+
+		io.name					= "digipicco humidity";
+		io.id					= (int)_ios.size();
+		io.address				= 0xf0;
+		io.type					= DeviceIO::analog;
+		io.direction			= DeviceIO::input;
+		io.lower_boundary		= 0.0;
+		io.upper_boundary		= 100.0;
+		io.precision			= 0;
+		io.value				= digipicco_humidity;
+		io.stamp_updated		= time(0);
+
+		_ios.push_back(io);
+	}
+	else
+		vlog("digipicco not detected\n");
+
+	int tsl2550_lux;
+
+	if(_read_tsl2550(fd, 0x72, tsl2550_lux))
+	{
+		vlog("tsl2550 detected at 0x72\n");
+
+		DeviceIO io;
+
+		io.name					= "tsl2550";
+		io.id					= (int)_ios.size();
+		io.address				= 0x72;
+		io.type					= DeviceIO::analog;
+		io.direction			= DeviceIO::input;
+		io.lower_boundary		= 0;
+		io.upper_boundary		= 10000;
+		io.precision			= 0;
+		io.value				= tsl2550_lux;
+		io.stamp_updated		= time(0);
+
+		_ios.push_back(io);
+
+	}
+	else
+		vlog("tsl2550 not detected\n");
 
 	return(fd);
 }
 
-void DeviceElv::_close(int fd) throw()
+int DeviceElv::_close(int fd) throw()
 {
 	::close(fd);
+
+	return(-1);
 }
 
-string DeviceElv::_command(string cmd, int timeout) throw()
+static int timespec_diff(timespec start, timespec end)
 {
-	static char		buffer[256];
-	struct pollfd	pfd;
-	ssize_t			len;
-	int				attempt, attempt1;
-	int				pr;
-	string			rv;
+	timespec temp;
 
-	for(attempt = 25; attempt > 0; attempt--)
+	if((end.tv_nsec - start.tv_nsec) < 0)
 	{
-		if(_device_fd < 0)
-		{
-			if(_debug)
-				vlog("open \"%s\"\n", _device_node.c_str());
-			_device_fd = _open();
-		}
-
-		if(_device_fd < 0)
-		{
-			if(_debug)
-				vlog("cannot open \"%s\"\n", _device_node.c_str());
-			goto retry;
-		}
-
-		for(attempt1 = 25; attempt1 > 0; attempt1--)
-		{
-			pfd.fd		= _device_fd;
-			pfd.events	= POLLIN | POLLERR;
-
-			pr = poll(&pfd, 1, 0);
-
-			if(pr < 0)
-			{
-				vlog("poll error\n");
-				goto retry;
-			}
-
-			if(pr == 0)
-			{
-				//vlog("flush poll timeout\n");
-				break;
-			}
-
-			if(pfd.revents & POLLERR)
-			{
-				vlog("i/o error\n");
-				goto retry;
-			}
-
-			if(pfd.revents & POLLIN)
-			{
-				len = ::read(_device_fd, buffer, sizeof(buffer));
-
-				if(_debug)
-					vlog("clearing backlog, try %d, cleared %d bytes\n", attempt1, len);
-			}
-		}
-
-		vlog("write: %s\n", cmd.c_str());
-
-		if(::write(_device_fd, cmd.c_str(), cmd.length()) != (ssize_t)cmd.length())
-		{
-			if(_debug)
-				vlog("write error\n");
-
-			goto retry;
-		}
-
-		for(attempt1 = 25; attempt1 > 0; attempt1--)
-		{
-			pfd.fd		= _device_fd;
-			pfd.events	= POLLIN | POLLERR;
-
-			//vlog("read poll, timeout = %d\n", timeout);
-
-			pr = poll(&pfd, 1, timeout);
-
-			if(pr < 0)
-			{
-				vlog("read poll error\n");
-				goto retry;
-			}
-
-			if(pr == 0)
-				break;
-
-			if(pfd.revents & POLLERR)
-			{
-				vlog("read i/o error (1)\n");
-				goto retry;
-			}
-
-			if(pfd.revents & POLLIN)
-			{
-				len = ::read(_device_fd, buffer, sizeof(buffer) - 1);
-				buffer[len] = 0;
-
-				//if(_debug)
-					//vlog("received %d bytes: %s\n", len, buffer);
-
-				rv += buffer;
-			}
-		}
-
-		if(attempt1 > 0)
-			break;
-
-		vlog("read error\n");
-
-retry:
-		vlog("retry %d\n", attempt);
-		_close(_device_fd);
-		_device_fd = -1;
-		sleep(1);
+		temp.tv_sec		= end.tv_sec - start.tv_sec - 1;
+		temp.tv_nsec	= 1000000000 + end.tv_nsec - start.tv_nsec;
+	}
+	else
+	{
+		temp.tv_sec		= end.tv_sec - start.tv_sec;
+		temp.tv_nsec	= end.tv_nsec - start.tv_nsec;
 	}
 
-	if(attempt <= 0)
-		vlog("DeviceElv::_command:i/o error, giving up");
-
-	return(rv);
+	return((temp.tv_sec * 1000) + (temp.tv_nsec / 1000000));
 }
 
-bool DeviceElv::_parse_digipicco(string str, int &value1, int &value2) throw()
+static bool _tsl2550_adccount(int &val, bool &overflow)
 {
-	regex e("([0-9A-F]{2}) ([0-9A-F]{2}) ([0-9A-F]{2}) ([0-9A-F]{2})...");
-	smatch s;
-	string sval1, sval2;
+	bool	valid	= !!(val & 0x80);
+	int		chord	= (val & 0x70) >> 4;
+	int		step	= (val & 0x0f);
 
-	//printf("match \"%s\"\n", str.c_str());
-
-	if(!regex_match(str, s, e))
+	if(!valid)
 	{
-		//printf("no match\n");
+		vlog("_tsl2550_adccount: invalid value\n");
 		return(false);
 	}
 
-	if(s.size() != 5)
-	{
-		//printf("size wrong\n");
-		return(false);
-	}
+	if((val & 0x7f) == 0x7f)
+		overflow = true;
 
-	sval1 = string(s[1]) + string(s[2]);
-	sval2 = string(s[3]) + string(s[4]);
+	int	chordval	= 16.5 * ((1 << chord) - 1);
+	int	stepval		= step * (1 << chord);
 
-	//printf("sval1 = \"%s\", sval2 = \"%s\"\n", sval1.c_str(), sval2.c_str());
+	val = chordval + stepval;
 
-	value1 = strtoul(sval1.c_str(), 0, 16);
-	value2 = strtoul(sval2.c_str(), 0, 16);
-
-	//printf("val1 = %d, val2 = %d\n", value1, value2);
-	//printf("val1 = %x, val2 = %x\n", value1, value2);
+	dlog("_tsl2550_adccount: valid = %d, chord = %d, step = %d, chordval = %d, stepval = %d, count = %d, overflow = %d\n",
+			valid, chord, step, chordval, stepval, val, (int)overflow);
 
 	return(true);
 }
 
-bool DeviceElv::_detect_digipicco() throw()
+static int _tsl2550_count2lux(int ch0, int ch1, int multiplier)
 {
-	string rv;
+	double	r = (double)ch1 / ((double)ch0 - (double)ch1);
+	double	e = exp(-0.181 * r * r);
+	double	l = ((double)ch0 - (double)ch1) * 0.39 * e;
 
-	vlog("sf0\n");
-	rv = _command("sf0");
-	vlog("result: \"%s\"\n\n", rv.c_str());
+	return((int)(l * (double)multiplier));
+}
 
-	vlog("r04p\n");
-	rv = _command("r04p");
-	vlog("result: \"%s\"\n\n", rv.c_str());
+string DeviceElv::_command(int fd, string cmd, int timeout, int chunks) throw(string)
+{
+	static char		buffer[256];
+	struct pollfd	pfd;
+	ssize_t			len;
+	int				pr;
+	string			rv;
+	struct timespec	start, now;
+	int				timeout_left;
 
-	if(rv.find("Err:TWI READ") == string::npos)
+	if(clock_gettime(CLOCK_MONOTONIC, &start))
+		throw(string("DeviceElv::_command: clock_gettime error\n"));
+
+	cmd = string(":") + cmd + string("\n");
+
+	while(true)
+	{
+		if(clock_gettime(CLOCK_MONOTONIC, &now))
+			throw(string("DeviceElv::_command: clock_gettime error\n"));
+
+		timeout_left = timespec_diff(start, now);
+
+		if((timeout > 0) && (timeout_left < 0))
+			throw(string("DeviceElv::_command: fatal timeout (1)"));
+
+		pfd.fd		= fd;
+		pfd.events	= POLLIN | POLLERR;
+
+		pr = poll(&pfd, 1, 0);
+
+		if(pr < 0)
+			throw(string("DeviceElv::_command: poll error (1)"));
+
+		if(pr == 0)
+			break;
+
+		if(pfd.revents & POLLERR)
+			throw(string("DeviceElv::_command: poll error (2)"));
+
+		if(pfd.revents & POLLIN)
+		{
+			len = ::read(fd, buffer, sizeof(buffer) - 1);
+			buffer[len] = 0;
+			dlog("clearing backlog, cleared %d bytes: %s\n", len, buffer);
+		}
+	}
+
+	if(clock_gettime(CLOCK_MONOTONIC, &now))
+		throw(string("DeviceElv::_command: clock_gettime error\n"));
+
+	timeout_left = timeout > 0 ? timeout - timespec_diff(start, now) : -1;
+
+	pfd.fd		= fd;
+	pfd.events	= POLLOUT | POLLERR;
+
+	pr = poll(&pfd, 1, timeout_left);
+
+	if(pr < 0)
+		throw(string("DeviceElv::_command: poll error (3)"));
+
+	if(pfd.revents & POLLERR)
+		throw(string("DeviceElv::_command: poll error (4)"));
+
+	if(!(pfd.revents & POLLOUT))
+		throw(string("DeviceElv::_command: fatal timeout (2)"));
+
+	//dlog("write: \"%s\"\n", cmd.c_str());
+
+	if(::write(fd, cmd.c_str(), cmd.length()) != (ssize_t)cmd.length())
+		throw(string("DeviceElv::_command: write error"));
+
+	while(chunks > 0)
+	{
+		if(clock_gettime(CLOCK_MONOTONIC, &now))
+			throw(string("DeviceElv::_command: clock_gettime error\n"));
+
+		timeout_left = timeout > 0 ? timeout - timespec_diff(start, now) : -1;
+
+		if((timeout > 0) && (timeout_left < 0))
+			break;
+
+		pfd.fd		= fd;
+		pfd.events	= POLLIN | POLLERR;
+
+		//dlog("read poll, timeout = %d\n", timeout_left);
+
+		pr = poll(&pfd, 1, timeout_left);
+
+		if(pr < 0)
+			throw(string("DeviceElv::_command: poll error (5)"));
+
+		if(pr == 0)
+			break;
+
+		if(pfd.revents & POLLERR)
+			throw(string("DeviceElv::_command: poll error (6)"));
+
+		if(pfd.revents & POLLIN)
+		{
+			len = ::read(fd, buffer, sizeof(buffer) - 1);
+			buffer[len] = 0;
+			//dlog("received %d bytes: %s\n", len, buffer);
+			rv += buffer;
+			chunks--;
+		}
+	}
+
+	return(rv);
+}
+
+bool DeviceElv::_parse_bytes(string str, int amount, vector<int> & value) throw()
+{
+	string			match_string;
+	smatch			s;
+	vector<string>	sval;
+	int				i;
+
+	sval.resize(amount);
+	value.resize(amount);
+
+	match_string = "\\s*";
+	for(i = 0; i < amount; i++)
+	{
+		match_string += "([0-9A-F]{2})";
+		if((i + 1) < amount)
+			match_string += "\\s+";
+	}
+	match_string += "\\s*";
+
+	printf("match_bytes(%d) \"%s\" =~ \"%s\"\n", amount, str.c_str(), match_string.c_str());
+
+	regex e(match_string);
+
+	if(!regex_match(str, s, e))
+	{
+		printf("no match\n");
 		return(false);
+	}
 
-	vlog("r04p\n");
-	rv = _command("r04p");
-	vlog("result: \"%s\"\n\n", rv.c_str());
-
-	int value1, value2;
-
-	if(!_parse_digipicco(rv, value1, value2))
+	if(s.size() != (amount + 1))
+	{
+		printf("size wrong\n");
 		return(false);
+	}
 
-	if((value1 == 65536) && (value2 == 65536))
+	for(i = 0; i < amount; i++)
+	{
+		sval[i] = string(s[i + 1]);
+		dlog("sval[%d] = \"%s\"  ", i, sval[i].c_str());
+	}
+	dlog("\n");
+
+	for(i = 0; i < amount; i++)
+	{
+		stringstream conv;
+		conv << hex << sval[i];
+		conv >> value[i];
+	}
+
+	for(i = 0; i < amount; i++)
+		vlog("value[%d] = %x  ", i, value[i]);
+	dlog("\n");
+
+	return(true);
+}
+
+bool DeviceElv::_read_digipicco(int fd, int addr, double & temperature, double & humidity) throw()
+{
+	ostringstream	cmd;
+	string			rv;
+	int				attempt;
+	int				v1, v2;
+	vector<int>		v;
+
+	try
+	{
+		// s <f0> p
+		cmd.str("");
+		cmd << "s " << hex << setfill('0') << setw(2) << addr << " p";
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n\n", rv.c_str());
+
+		// r 04 p
+		cmd.str("");
+		cmd << "r 04 p";
+
+		for(attempt = 3; attempt > 0; attempt--)
+		{
+			dlog("> %s\n", cmd.str().c_str());
+			rv = _command(fd, cmd.str());
+			dlog("< \"%s\"\n\n", rv.c_str());
+
+			if(_parse_bytes(rv, 4, v))
+				break;
+
+			usleep(100000);
+		}
+	}
+	catch(string s)
+	{
+		vlog("read_digipicco: exception: %s\n", s.c_str());
 		return(false);
+	}
+
+	if(attempt == 0)
+	{
+		vlog("read_digipicco: error during i/o: %s\n", rv.c_str());
+		return(false);
+	}
+
+	v1	= (v[0] << 8) | v[1];
+	v2	= (v[2] << 8) | v[3];
+
+	dlog("temperature = 0x%x, humidity = 0x%x\n", v2, v1);
+	dlog("temperature = %d, humidity = %d\n", v2, v1);
+
+	if((v1 == 0xffff) && (v2 == 0xffff))
+	{
+		dlog("read_digipicco: invalid values 0xffff\n");
+		return(false);
+	}
+
+	temperature	= (((double)v2 / 32767) * 165) - 40;
+	humidity	= (double)v1 / 327.67;
+
+	dlog("temperature = %f, humidity = %f\n", temperature, humidity);
+
+	return(true);
+}
+
+bool DeviceElv::_read_tsl2550(int fd, int addr, int &lux) throw()
+{
+	ostringstream	cmd;
+	string			rv;
+	vector<int>		v;
+	int				ch0s, ch0e, ch1s, ch1e;
+	int				ls, le;
+	bool			overflows, overflowe;
+
+	try
+	{
+		// s 72 03 p // startup
+		cmd.str("");
+		cmd << "s " << hex << setfill('0') << setw(2) << addr << " 03 p";
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", cmd.str().c_str());
+		if(rv.find("Err") != string::npos)
+		{
+			vlog("_read_tsl2550: cmd set returns error\n");
+			return(false);
+		}
+
+		// r 01 p // read command register
+		cmd.str("r 01 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", rv.c_str());
+		if(!_parse_bytes(rv, 1, v))
+		{
+			vlog("_read_tsl2550: cmd read error\n");
+			return(false);
+		}
+		if(v[0] != 3)
+		{
+			vlog("_read_tsl2550: cmd read does not return 03\n");
+			return(false);
+		}
+		
+		// w 18 p // select standard range mode
+		cmd.str("w 18 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", rv.c_str());
+		if(rv.find("Err") != string::npos)
+		{
+			vlog("_read_tsl2550: set standard range mode returns error\n");
+			return(false);
+		}
+		
+		// w 43 p // select adc channel 0
+		cmd.str("w 43 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", rv.c_str());
+		if(rv.find("Err") != string::npos)
+		{
+			vlog("_read_tsl2550: set adc channel 0/standard returns error\n");
+			return(false);
+		}
+
+		// r 01 p // read ch0s
+		cmd.str("r 01 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", rv.c_str());
+		if(!_parse_bytes(rv, 1, v))
+		{
+			vlog("_read_tsl2550: read channel 0/standard read error\n");
+			return(false);
+		}
+		ch0s = v[0];
+
+		// w 83 p // select adc channel 1
+		cmd.str("w 83 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", rv.c_str());
+		if(rv.find("Err") != string::npos)
+		{
+			vlog("_read_tsl2550: set adc channel 1/standard returns error\n");
+			return(false);
+		}
+		
+		// r 01 p // read ch1s
+		cmd.str("r 01 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", rv.c_str());
+		if(!_parse_bytes(rv, 1, v))
+		{
+			vlog("_read_tsl2550: read channel 1/standard read error\n");
+			return(false);
+		}
+		ch1s = v[0];
+
+	
+		// w 1d p // select extended range mode
+		cmd.str("w 1d p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", rv.c_str());
+		if(rv.find("Err") != string::npos)
+		{
+			vlog("_read_tsl2550: set extended range mode returns error\n");
+			return(false);
+		}
+		
+		// w 43 p // select adc channel 0
+		cmd.str("w 43 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", rv.c_str());
+		if(rv.find("Err") != string::npos)
+		{
+			vlog("_read_tsl2550: set adc channel 0/extended returns error\n");
+			return(false);
+		}
+
+		// r 01 p // read ch0e
+		cmd.str("r 01 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", rv.c_str());
+		if(!_parse_bytes(rv, 1, v))
+		{
+			vlog("_read_tsl2550: read channel 0/extended read error\n");
+			return(false);
+		}
+		ch0e = v[0];
+
+		// w 83 p // select adc channel 1
+		cmd.str("w 83 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", rv.c_str());
+		if(rv.find("Err") != string::npos)
+		{
+			vlog("_read_tsl2550: set adc channel 1/extended returns error\n");
+			return(false);
+		}
+		
+		// r 01 p // read ch1s
+		cmd.str("r 01 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< \"%s\"\n", rv.c_str());
+		if(!_parse_bytes(rv, 1, v))
+		{
+			vlog("_read_tsl2550: read channel 1/extended read error\n");
+			return(false);
+		}
+		ch1e = v[0];
+	}
+	catch(string s)
+	{
+		vlog("_read_tsl2550: exception during detection: %s\n", s.c_str());
+		return(false);
+	}
+
+	dlog("ch0s = %d, ch1s = %d, ch0e = %d, ch1e = %d\n", ch0s, ch1s, ch0e, ch1e);
+
+	overflows = overflowe = false;
+
+	if(!_tsl2550_adccount(ch0s, overflows))
+	{
+		vlog("_read_tsl2550: ch0s invalid\n");
+		return(false);
+	}
+
+	if(!_tsl2550_adccount(ch1s, overflows))
+	{
+		vlog("_read_tsl2550: ch1s invalid\n");
+		return(false);
+	}
+
+	if(!_tsl2550_adccount(ch0e, overflowe))
+	{
+		vlog("_read_tsl2550: ch0e invalid\n");
+		return(false);
+	}
+
+	if(!_tsl2550_adccount(ch1e, overflowe))
+	{
+		vlog("_read_tsl2550: ch1e invalid\n");
+		return(false);
+	}
+
+	dlog("ch0s = %d, ch1s = %d, ch0e = %d, ch1e = %d\n",
+			ch0s, ch1s, ch0e, ch1e);
+
+	ls = _tsl2550_count2lux(ch0s, ch1s, 1);
+	le = _tsl2550_count2lux(ch0e, ch1e, 5);
+
+	lux = overflows ? le : ls;
+
+	dlog("lux = %d\n", lux);
 
 	return(true);
 }
@@ -255,8 +667,8 @@ DeviceElv::DeviceElv(string device_node, int) throw(string) : Device()
 	if(device_node == "")
 		device_node = "/dev/ttyUSB1";
 
-	_device_node		= device_node;
-	_device_fd			= -1;
+	_device_node	= device_node;
+	_device_fd		= -1;
 }
 
 DeviceElv::~DeviceElv() throw()
@@ -269,128 +681,71 @@ string DeviceElv::__device_name() const throw()
 	return(string("ELV USB-I2C"));
 }
 
-void DeviceElv::__open() throw(string)
+int DeviceElv::__open() throw(string)
 {
-    if(_device_fd >= 0)
-        throw(string("DeviceElv::open: device already open"));
+    if(_device_fd < 0)
+		_device_fd = _open();
 
-	_device_fd = _open();
+	return(_device_fd);
 }
 
 void DeviceElv::__close() throw()
 {
 	if(_device_fd >= 0)
-	{
-		_close(_device_fd);
-		_device_fd = -1;
-	}
-}
-
-void DeviceElv::__init() throw(string)
-{
-	string rv;
-	vlog("perform init\n");
-
-	vlog("reset\n");
-	rv = _command("z4b", 2000);
-	vlog("result: \"%s\"\n", rv.c_str());
-
-	if(rv.find("ELV USB-I2C-Interface v1.6 (Cal:44)") == string::npos)
-		throw(string("interface ELV not found"));
-
-	if(_detect_digipicco())
-	{
-		vlog("digipicco detected\n");
-
-		DeviceIO io;
-
-		io.name					= "digipicco temperature";
-		io.id					= (int)_ios.size();
-		io.type					= DeviceIO::analog;
-		io.direction			= DeviceIO::input;
-		io.lower_boundary		= -40.0;
-		io.upper_boundary		= 125.0;
-
-		_ios.push_back(io);
-
-		io.name					= "digipicco humidity";
-		io.id					= (int)_ios.size();
-		io.type					= DeviceIO::analog;
-		io.direction			= DeviceIO::input;
-		io.lower_boundary		= 0.0;
-		io.upper_boundary		= 100.0;
-
-		_ios.push_back(io);
-	}
-	else
-		vlog("digipicco not detected\n");
+		_device_fd = _close(_device_fd);
 }
 
 void DeviceElv::__update(DeviceIOIterator io) throw(string)
 {
+	int		fd;
 	string	rv;
-	int		attempt;
-	int		value1, value2;
-	double	temperature, humidity;
 
-	vlog("update %s\n", io->name.c_str());
+	dlog("update %s\n", io->name.c_str());
 
-	if((io->name != "digipicco humidity") &&  (io->name != "digipicco temperature"))
-		return;
-
-	for(attempt = 25; attempt > 0; attempt--)
+	try
 	{
-		vlog("sf0\n");
-		rv = _command("sf0");
-		vlog("result: \"%s\"\n\n", rv.c_str());
-
-		vlog("r04p\n");
-		rv = _command("r04p");
-		vlog("result: \"%s\"\n\n", rv.c_str());
-
-		if(rv.find("Err:TWI READ") == string::npos)
-		{
-			vlog("Err:TWI READ not found\n");
-			continue;
-		}
-
-		vlog("r04p\n");
-		rv = _command("r04p");
-		vlog("result: \"%s\"\n\n", rv.c_str());
-
-		if(!_parse_digipicco(rv, value1, value2))
-		{
-			vlog("output does not match\n");
-			continue;
-		}
-
-		if((value1 == 0xffff) && (value2 == 0xffff))
-		{
-			vlog("answer out of range\n");
-			continue;
-		}
-
-		temperature = (((double)value2 / 32767) * 165) - 40;
-		humidity = (double)value1 / 327.67;
-
-		break;
+		fd = __open();
+	}
+	catch(string e)
+	{
+		__close();
+		throw(string("DeviceElv::__update: i/o error: ") + e);
 	}
 
-	if(attempt == 0)
+	if((io->name == "digipicco humidity") || (io->name == "digipicco temperature"))
 	{
-		vlog("attempt = 0\n");
-		return;
+		double temperature, humidity;
+
+		if(!_read_digipicco(fd, io->address, temperature, humidity))
+		{
+			__close();
+			throw(string("DeviceElv::__update::digipicco: i/o error"));
+		}
+
+		if(io->name == "digipicco temperature")
+		{
+			io->value = temperature;
+			io->stamp_updated = time(0);
+		}
+
+		if(io->name == "digipicco humidity")
+		{
+			io->value = humidity;
+			io->stamp_updated = time(0);
+		}
 	}
 
-	if(io->name == "digipicco temperature")
+	if(io->name == "tsl2550")
 	{
-		io->value = temperature;
-		io->stamp_updated = time(0);
-	}
+		int lux;
 
-	if(io->name == "digipicco humidity")
-	{
-		io->value = humidity;
-		io->stamp_updated = time(0);
+		if(!_read_tsl2550(fd, io->address, lux))
+		{
+			__close();
+			throw(string("DeviceElv::__update::tsl2550: i/o error"));
+		}
+
+		io->value			= lux;
+		io->stamp_updated	= time(0);
 	}
 }

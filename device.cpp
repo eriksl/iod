@@ -14,8 +14,6 @@ using std::accumulate;
 Device::Device() throw(string)
 {
 	_isopen			= false;
-	_isinit			= false;
-	_debug			= false;
 	_mutex_valid	= false;
 	pthread_mutex_init(&_mutex, 0);
 	_mutex_valid	= true;
@@ -39,12 +37,6 @@ void Device::open() throw(string)
 
 	__open();
 	_isopen = true;
-
-	if(!_isinit)
-	{
-		__init();
-		_isinit = true;
-	}
 }
 
 void Device::close() throw()
@@ -58,11 +50,6 @@ void Device::close() throw()
 string Device::device_name() const throw()
 {
 	return(__device_name());
-}
-
-void Device::debug(bool onoff) throw()
-{
-	_debug = onoff;
 }
 
 void Device::_update(DeviceIOIterator io) throw(string)
@@ -124,7 +111,15 @@ void Device::update() throw(string)
 	DeviceIOs::iterator io;
 
 	for(io = _ios.begin(); io != _ios.end(); io++)
-		_update(io);
+	{
+		try
+		{
+			_update(io);
+		}
+		catch(string s)
+		{
+		}
+	}
 }
 
 void Device::lock() throw(string)

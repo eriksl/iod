@@ -78,7 +78,6 @@ int main(int argc, char ** argv)
 	int					opt;
 	bool				foreground	= false;
 	bool				quick		= false;
-	bool				debug		= false;
 	string				keyscript;
 	Device *			device = (Device *)0;
 
@@ -162,9 +161,6 @@ int main(int argc, char ** argv)
 			fprintf(stderr, "unknown device, available devices:%s\n", devices.c_str());
 			exit(-1);
 		}
-
-		if(debug)
-			device->debug(true);
 
 		device->open();
 

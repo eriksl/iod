@@ -53,7 +53,7 @@ ifeq ($(ENABLE_DEVICE_ELV),1)
 	OBJS		+= device_elv.o
 	DEPS		+= .device_elv.d
 	CPPFLAGS	+= -DDEVICE_ELV
-	LDFLAGS		+= -lboost_regex
+	LDFLAGS		+= -lboost_regex -lrt
 endif
 
 include common.mak
