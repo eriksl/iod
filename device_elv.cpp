@@ -84,7 +84,7 @@ int DeviceElv::_open() throw(string)
 
 	try
 	{
-		rv = _command(fd, "z 4b", 2000, 2);
+		rv = _command(fd, "z 4b", 5000, 2);
 	}
 	catch(string s)
 	{
@@ -113,8 +113,11 @@ int DeviceElv::_open() throw(string)
 
 		DeviceIO io;
 
-		io.name					= "digipicco temperature";
 		io.id					= (int)_ios.size();
+		io.name					= "digipicco temperature";
+		io.function				= "temperature";
+		io.unit					= "˙ C";
+		io.bustype				= "i2c";
 		io.address				= 0xf0;
 		io.type					= DeviceIO::analog;
 		io.direction			= DeviceIO::input;
@@ -126,8 +129,11 @@ int DeviceElv::_open() throw(string)
 
 		_ios.push_back(io);
 
-		io.name					= "digipicco humidity";
 		io.id					= (int)_ios.size();
+		io.name					= "digipicco humidity";
+		io.function				= "humidity";
+		io.unit					= "% RV";
+		io.bustype				= "i2c";
 		io.address				= 0xf0;
 		io.type					= DeviceIO::analog;
 		io.direction			= DeviceIO::input;
@@ -142,7 +148,7 @@ int DeviceElv::_open() throw(string)
 	else
 		vlog("digipicco not detected\n");
 
-	int tsl2550_lux;
+	double tsl2550_lux;
 
 	if(_read_tsl2550(fd, 0x72, tsl2550_lux))
 	{
@@ -150,14 +156,17 @@ int DeviceElv::_open() throw(string)
 
 		DeviceIO io;
 
-		io.name					= "tsl2550";
 		io.id					= (int)_ios.size();
+		io.name					= "tsl2550";
+		io.function				= "ambient light intensity";
+		io.unit					= "lux";
+		io.bustype				= "i2c";
 		io.address				= 0x72;
 		io.type					= DeviceIO::analog;
 		io.direction			= DeviceIO::input;
 		io.lower_boundary		= 0;
-		io.upper_boundary		= 10000;
-		io.precision			= 0;
+		io.upper_boundary		= 6500
+		io.precision			= 2;
 		io.value				= tsl2550_lux;
 		io.stamp_updated		= time(0);
 
@@ -195,7 +204,7 @@ static int timespec_diff(timespec start, timespec end)
 	return((temp.tv_sec * 1000) + (temp.tv_nsec / 1000000));
 }
 
-static bool _tsl2550_adccount(int in, int &out, bool &overflow)
+static bool _tsl2550_adc2count(int in, int &out, bool &overflow)
 {
 	bool	valid	= !!(in & 0x80);
 	int		chord	= (in & 0x70) >> 4;
@@ -203,7 +212,7 @@ static bool _tsl2550_adccount(int in, int &out, bool &overflow)
 
 	if(!valid)
 	{
-		//dlog("_tsl2550_adccount: invalid value\n");
+		//dlog("_tsl2550_adc2count: invalid value\n");
 		return(false);
 	}
 
@@ -215,19 +224,25 @@ static bool _tsl2550_adccount(int in, int &out, bool &overflow)
 
 	out = chordval + stepval;
 
-	//dlog("_tsl2550_adccount: valid = %d, chord = %d, step = %d, chordval = %d, stepval = %d, count = %d, overflow = %d\n",
+	//dlog("_tsl2550_adc2count: valid = %d, chord = %d, step = %d, chordval = %d, stepval = %d, count = %d, overflow = %d\n",
 			//valid, chord, step, chordval, stepval, out, (int)overflow);
 
 	return(true);
 }
 
-static int _tsl2550_count2lux(int ch0, int ch1, int multiplier)
+static double _tsl2550_count2lux(int ch0, int ch1, int multiplier)
 {
 	double	r = (double)ch1 / ((double)ch0 - (double)ch1);
 	double	e = exp(-0.181 * r * r);
-	double	l = ((double)ch0 - (double)ch1) * 0.39 * e;
+	double	l = ((double)ch0 - (double)ch1) * 0.39 * e * (double)multiplier;
 
-	return((int)(l * (double)multiplier));
+	dlog("_tsl2550_count2lux: ch0=%d, ch1=%d, multiplier=%d\n", ch0, ch1, multiplier);
+	dlog("_tsl2550_count2lux: r=%f, e=%f, l=%f\n", r, e, l);
+
+	if(l > 10)
+		l = round(l);
+
+	return(l);
 }
 
 string DeviceElv::_command(int fd, string cmd, int timeout, int chunks) throw(string)
@@ -460,68 +475,83 @@ bool DeviceElv::_read_digipicco(int fd, int addr, double & temperature, double &
 	return(true);
 }
 
-bool DeviceElv::_read_tsl2550(int fd, int addr, int &lux) throw()
+bool DeviceElv::_read_tsl2550_1(int fd, int addr, bool erange, double &lux) throw()
 {
+	string			range_cmd;
+	int				range_sleep;
+	int				range_multiplier;
 	ostringstream	cmd;
 	string			rv;
 	vector<int>		v;
-	int				ch0s, ch1s, ch0e, ch1e;
-	int				cch0s, cch1s, cch0e, cch1e;
-	int				ls, le;
-	bool			overflows, overflowe;
-	int				conversiontimeout = 1000;
+	int				ch[2], cch[2];
+	bool			overflow;
+
+	if(erange)
+	{
+		range_cmd			= "1d";
+		range_sleep			= 160000;
+		range_multiplier	= 5;
+	}
+	else
+	{
+		range_cmd			= "18";
+		range_sleep			= 800000;
+		range_multiplier	= 1;
+	}
 
 	try
 	{
-		// <72> 03 // startup
+		// s <72> w 00 w 03 r 01 p // cycle power ensure fresh readings
 		cmd.str("");
-		cmd << "s " << hex << setfill('0') << setw(2) << addr << " 03 p";
-		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str(), conversiontimeout, 2);
-		dlog("< %s\n\n", rv.c_str());
-
-		// read command register
-		cmd.str("r 01 p");
+		cmd << "s " << hex << setfill('0') << setw(2) << addr << " w 00 w 03 r 01 p";
 		dlog("> %s\n", cmd.str().c_str());
 		rv = _command(fd, cmd.str());
-		dlog("< %s\n", rv.c_str());
+		dlog("< %s\n\n", rv.c_str());
 		if(!_parse_bytes(rv, 1, v))
 		{
 			vlog("_read_tsl2550: cmd read error\n");
 			return(false);
 		}
-		if(v[0] != 3)
+		if(v[0] != 0x03)
 		{
 			vlog("_read_tsl2550: cmd read does not return 0x03\n");
 			return(false);
 		}
-		
-		// 18 43 // select standard range mode, channel 0
-		cmd.str("w 18 w 43 p");
-		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str(), conversiontimeout, 2);
-		dlog("< %s\n\n", rv.c_str());
-		
-		// read ch0s
-		cmd.str("r 01 p");
+
+		// w <18/1d> r 01 p // select range mode
+		cmd.str("w " + range_cmd + " r 01 p");
 		dlog("> %s\n", cmd.str().c_str());
 		rv = _command(fd, cmd.str());
 		dlog("< %s\n\n", rv.c_str());
 		if(!_parse_bytes(rv, 1, v))
 		{
-			vlog("_read_tsl2550: read channel 0/standard read error\n");
+			vlog("_read_tsl2550: cmd read error\n");
 			return(false);
 		}
-		ch0s = v[0];
+		if(v[0] != 0x1b)
+		{
+			vlog("_read_tsl2550: cmd read does not return 0x1b\n");
+			return(false);
+		}
 
-		// 18 83 // select standard range mode, channel 1
-		cmd.str("w 18 w 83 p");
-		dlog("> %s\n", cmd.str().c_str(), conversiontimeout, 2);
+		usleep(range_sleep);
+
+		// 43 // select channel 0
+		// read ch0
+		cmd.str("w 43 r 01 p");
+		dlog("> %s\n", cmd.str().c_str());
 		rv = _command(fd, cmd.str());
 		dlog("< %s\n\n", rv.c_str());
+		if(!_parse_bytes(rv, 1, v))
+		{
+			vlog("_read_tsl2550: read channel 0 error\n");
+			return(false);
+		}
+		ch[0] = v[0];
 		
-		// read ch1s
-		cmd.str("r 01 p");
+		// 83 // select channel 1
+		// read ch1
+		cmd.str("w 83 r 01 p");
 		dlog("> %s\n", cmd.str().c_str());
 		rv = _command(fd, cmd.str());
 		dlog("< %s\n\n", rv.c_str());
@@ -530,86 +560,59 @@ bool DeviceElv::_read_tsl2550(int fd, int addr, int &lux) throw()
 			vlog("_read_tsl2550: read channel 1/standard read error\n");
 			return(false);
 		}
-		ch1s = v[0];
-
-		// 1d 43 // select extended range mode, channel 0
-		cmd.str("w 1d w 43 p");
-		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str(), conversiontimeout, 2);
-		dlog("< %s\n", rv.c_str());
-
-		// read ch0e
-		cmd.str("r 01 p");
-		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str());
-		dlog("< %s\n", rv.c_str());
-		if(!_parse_bytes(rv, 1, v))
-		{
-			vlog("_read_tsl2550: read channel 0/extended read error\n");
-			return(false);
-		}
-		ch0e = v[0];
-
-		// 1d 83 // select extended range mode, channel 1
-		cmd.str("w 1d w 83 p");
-		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str(), conversiontimeout, 2);
-		dlog("< %s\n\n", rv.c_str());
-		
-		// read ch1e
-		cmd.str("r 01 p");
-		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str());
-		dlog("< %s\n", rv.c_str());
-		if(!_parse_bytes(rv, 1, v))
-		{
-			vlog("_read_tsl2550: read channel 1/extended read error\n");
-			return(false);
-		}
-		ch1e = v[0];
+		ch[1] = v[0];
 	}
 	catch(string s)
 	{
-		vlog("_read_tsl2550: exception during detection: %s\n", s.c_str());
+		vlog("_read_tsl2550: exception during io: %s\n", s.c_str());
 		return(false);
 	}
 
-	overflows = overflowe = false;
+	overflow = false;
 
-	if(!_tsl2550_adccount(ch0s, cch0s, overflows))
+	if(!_tsl2550_adc2count(ch[0], cch[0], overflow))
 	{
-		vlog("_read_tsl2550: ch0s invalid\n");
+		vlog("_read_tsl2550: ch0 invalid\n");
 		return(false);
 	}
 
-	if(!_tsl2550_adccount(ch1s, cch1s, overflows))
+	if(overflow)
 	{
-		vlog("_read_tsl2550: ch1s invalid\n");
-		return(false);
+		lux = -1;
+		return(true);
 	}
 
-	if(!_tsl2550_adccount(ch0e, cch0e, overflowe))
+	if(!_tsl2550_adc2count(ch[1], cch[1], overflow))
 	{
-		vlog("_read_tsl2550: ch0e invalid\n");
+		vlog("_read_tsl2550: ch1 invalid\n");
 		return(false);
 	}
+	dlog("ch0 = 0x%x/%d, ch1 = 0x%x/%d\n", ch[0], ch[0], ch[1], ch[1]);
+	dlog("cch0 = %d, cch1 = %d\n", cch[0], cch[1]);
 
-	if(!_tsl2550_adccount(ch1e, cch1e, overflowe))
+	if(overflow)
 	{
-		vlog("_read_tsl2550: ch1e invalid\n");
-		return(false);
+		lux = -1;
+		return(true);
 	}
 
-	dlog("ch0s = %d, ch1s = %d, ch0e = %d, ch1e = %d\n", ch0s, ch1s, ch0e, ch1e);
+	lux = _tsl2550_count2lux(cch[0], cch[1], range_multiplier);
+	dlog("lux = %f\n", lux);
 
-	dlog("cch0s = %d, cch1s = %d, cch0e = %d, cch1e = %d\n", cch0s, cch1s, cch0e, cch1e);
+	return(true);
+}
 
-	ls = _tsl2550_count2lux(cch0s, cch1s, 1);
-	le = _tsl2550_count2lux(cch0e, cch1e, 5);
+bool DeviceElv::_read_tsl2550(int fd, int addr, double &lux) throw()
+{
+	if(!_read_tsl2550_1(fd, addr, true, lux))
+		return(false);
 
-	lux = overflows ? le : ls;
-
-	dlog("lux = %d\n", lux);
+	if(lux < 10)
+	{
+		dlog("*** reread with standard range\n");
+		if(!_read_tsl2550_1(fd, addr, false, lux))
+			return(false);
+	}
 
 	return(true);
 }
@@ -689,7 +692,7 @@ void DeviceElv::__update(DeviceIOIterator io) throw(string)
 
 	if(io->name == "tsl2550")
 	{
-		int lux;
+		double lux;
 
 		if(!_read_tsl2550(fd, io->address, lux))
 		{

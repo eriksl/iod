@@ -31,8 +31,13 @@ int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string &
 	try
 	{
 		data += "<table>";
-		data += "<tr><td class=\"title\" colspan=\"13\">" + device->device_name() + "</td></tr>\n";
-		data += "<tr><td class=\"heading\">id</td><td class=\"heading\">name</td><td class=\"heading\">address</td><td class=\"heading\">type</td><td class=\"heading\">direction</td><td class=\"heading\">lower</td><td class=\"heading\">upper</td><td class=\"heading\">set</td><td class=\"heading\">read</td><td class=\"heading\">updated</td><td class=\"heading\">resampling</td><td class=\"heading\">value</td><td class=\"heading\">action</td></tr>\n";
+		data += "<tr><td class=\"title\" colspan=\"16\">" + device->device_name() + "</td></tr>\n";
+		data += "<tr><td class=\"heading\">id</td><td class=\"heading\">name</td><td class=\"heading\">function</td>";
+		data += "<td class=\"heading\">bustype</td><td class=\"heading\">address</td>";
+		data += "<td class=\"heading\">type</td><td class=\"heading\">direction</td>";
+		data += "<td class=\"heading\">lower</td><td class=\"heading\">upper</td>";
+		data += "<td class=\"heading\">set</td><td class=\"heading\">read</td><td class=\"heading\">updated</td>";
+		data += "<td class=\"heading\">resampling</td><td class=\"heading\">value</td><td class=\"heading\">unit</td><td class=\"heading\">action</td></tr>\n";
 
 		DeviceIOIterator io;
 
@@ -41,6 +46,8 @@ int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string &
 			data += "<tr>";
 			data += "<td>" + lexical_cast<string>(io->id) + "</td>";
 			data += "<td class=\"l\">" + io->name + "</td>";
+			data += "<td class=\"l\">" + io->function + "</td>";
+			data += "<td class=\"l\">" + io->bustype + "</td>";
 			conv.str("");
 			conv << hex << setfill('0') << setw(2) << io->address;
 			data += "<td>" + conv.str() + "</td>";
@@ -133,6 +140,8 @@ int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string &
 					"input", "value", value
 				) + "</td>";
 
+			data += "<td>" + io->unit + "</td>";
+
 			data += "<td>" +
 				make_simple_form
 				(
@@ -145,7 +154,7 @@ int HttpServer::page_dispatcher_root(MHD_Connection * connection, const string &
 			data += "</tr>\n";
 		}
 
-		data += "<tr><td colspan=\"13\">" +
+		data += "<tr><td colspan=\"16\">" +
 			make_simple_form
 			(
 			 	"post", "/update",

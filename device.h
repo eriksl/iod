@@ -34,6 +34,9 @@ class DeviceIO
 
 		int				id;
 		string			name;
+		string			function;
+		string			unit;
+		string			bustype;
 		int				address;
 		io_type_t		type;
 		io_direction_t	direction;
