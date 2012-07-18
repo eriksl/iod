@@ -17,6 +17,7 @@ class DeviceElv : public Device
 		bool	_read_digipicco(int fd, int addr, double &temp, double &hum)			throw();
 		bool	_read_tsl2550_1(int fd, int addr, bool erange, double &lux)				throw();
 		bool	_read_tsl2550(int fd, int addr, double &lux)							throw();
+		bool	_read_ds1731(int fd, int addr, double &temp)							throw();
 		int		_open()																	throw(string);
 		int		_close(int fd)															throw();
 		string	_command(int fd, string cmd, int timeout = 200, int chunks = 1)			throw(string);

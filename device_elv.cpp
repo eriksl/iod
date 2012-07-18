@@ -109,7 +109,7 @@ int DeviceElv::_open() throw(string)
 
 	if(_read_digipicco(fd, 0xf0, digipicco_temperature, digipicco_humidity))
 	{
-		vlog("digipicco detected at 0xf0\n");
+		vlog("digipicco@0xf0 detected\n");
 
 		DeviceIO io;
 
@@ -146,13 +146,13 @@ int DeviceElv::_open() throw(string)
 		_ios.push_back(io);
 	}
 	else
-		vlog("digipicco not detected\n");
+		vlog("digipicco@0xf0 not detected\n");
 
 	double tsl2550_lux;
 
 	if(_read_tsl2550(fd, 0x72, tsl2550_lux))
 	{
-		vlog("tsl2550 detected at 0x72\n");
+		vlog("tsl2550@0x72 detected\n");
 
 		DeviceIO io;
 
@@ -165,7 +165,7 @@ int DeviceElv::_open() throw(string)
 		io.type					= DeviceIO::analog;
 		io.direction			= DeviceIO::input;
 		io.lower_boundary		= 0;
-		io.upper_boundary		= 6500
+		io.upper_boundary		= 6500;
 		io.precision			= 2;
 		io.value				= tsl2550_lux;
 		io.stamp_updated		= time(0);
@@ -174,7 +174,35 @@ int DeviceElv::_open() throw(string)
 
 	}
 	else
-		vlog("tsl2550 not detected\n");
+		vlog("tsl2550@0x72 not detected\n");
+
+	double ds1731_temperature;
+
+	if(_read_ds1731(fd, 0x90, ds1731_temperature))
+	{
+		vlog("ds1731@0x90 detected\n");
+
+		DeviceIO io;
+
+		io.id					= (int)_ios.size();
+		io.name					= "ds1731";
+		io.function				= "temperature";
+		io.unit					= "˙ C";
+		io.bustype				= "i2c";
+		io.address				= 0x90;
+		io.type					= DeviceIO::analog;
+		io.direction			= DeviceIO::input;
+		io.lower_boundary		= -55;
+		io.upper_boundary		= 125;
+		io.precision			= 2;
+		io.value				= ds1731_temperature;
+		io.stamp_updated		= time(0);
+
+		_ios.push_back(io);
+
+	}
+	else
+		vlog("ds1731@0x90 not detected\n");
 
 	return(fd);
 }
@@ -384,7 +412,7 @@ bool DeviceElv::_parse_bytes(string str, int amount, vector<int> & value) throw(
 		return(false);
 	}
 
-	if(s.size() != (amount + 1))
+	if(s.size() != (unsigned int)(amount + 1))
 	{
 		//dlog("size wrong\n");
 		return(false);
@@ -617,6 +645,90 @@ bool DeviceElv::_read_tsl2550(int fd, int addr, double &lux) throw()
 	return(true);
 }
 
+bool DeviceElv::_read_ds1731(int fd, int addr, double &temp) throw()
+{
+	ostringstream	cmd;
+	string			rv;
+	vector<int>		v;
+
+	try
+	{
+		// s <90> 54 p // cycle power ensure fresh readings
+		cmd.str("");
+		cmd << "s " << hex << setfill('0') << setw(2) << addr << " 54 p";
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< %s\n\n", rv.c_str());
+
+		// check config register
+		cmd.str("w ac r 01 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< %s\n\n", rv.c_str());
+		if(!_parse_bytes(rv, 1, v))
+		{
+			vlog("_read_ds1731: cmd read error\n");
+			return(false);
+		}
+		if((v[0] & 0xfc) != 0x8c)
+		{
+			vlog("_read_ds1731: read config register does not return 0x8c\n");
+			return(false);
+		}
+
+		// put device in 12 bits / one shot mode
+		cmd.str("w ac 8d r 01 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< %s\n\n", rv.c_str());
+		if(!_parse_bytes(rv, 1, v))
+		{
+			vlog("_read_ds1731: cannot write config register\n");
+			return(false);
+		}
+		if((v[0] & 0xef) != 0x8d)
+		{
+			vlog("_read_ds1731: read config register does not return 0x8d\n");
+			return(false);
+		}
+		
+		// start convert
+		cmd.str("w 51 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< %s\n\n", rv.c_str());
+
+		// read temperature
+		cmd.str("w aa r 02 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< %s\n\n", rv.c_str());
+		if(!_parse_bytes(rv, 1, v))
+		{
+			vlog("_read_ds1731: cannot read temperature register\n");
+			return(false);
+		}
+	}
+	catch(string s)
+	{
+		vlog("_read_ds1731: exception during io: %s\n", s.c_str());
+		return(false);
+	}
+
+	bool negative	= !!(v[0] & 0x8000);
+	int hibyte		= v[0] & 0x7f00;
+	int lobyte		= v[0] & 0x00f0;
+
+	temp = hibyte + ((double)lobyte * 0.0625);
+
+	if(negative)
+		temp = 0 - temp;
+
+	vlog("_read_ds1731: temperature calculated as %f\n", temp);
+
+	return(true);
+}
+
 DeviceElv::DeviceElv(string device_node, int) throw(string) : Device()
 {
 	if(device_node == "")
@@ -701,6 +813,20 @@ void DeviceElv::__update(DeviceIOIterator io) throw(string)
 		}
 
 		io->value			= lux;
+		io->stamp_updated	= time(0);
+	}
+
+	if(io->name == "ds1731")
+	{
+		double temperature;
+
+		if(!_read_ds1731(fd, io->address, temperature))
+		{
+			__close();
+			throw(string("DeviceElv::__update::tsl2550: i/o error"));
+		}
+
+		io->value			= temperature;
 		io->stamp_updated	= time(0);
 	}
 }
