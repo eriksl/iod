@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <string.h>
 
 #include <sstream>
 using std::stringstream;
@@ -120,8 +121,9 @@ int HttpServer::send_raw(MHD_Connection * connection, int http_code,
 {
 	int						rv;
 	struct MHD_Response	*	response;
+	void *					data_copy = strdup(data.c_str());
 
-	response = MHD_create_response_from_data(data.size(), (void *)data.c_str(), MHD_NO, MHD_YES);
+	response = MHD_create_response_from_data(data.size(), data_copy, MHD_NO, MHD_YES);
 	MHD_add_response_header(response, "Content-Type", data_mime.c_str());
 
 	if(cookie_id.size())
@@ -132,6 +134,8 @@ int HttpServer::send_raw(MHD_Connection * connection, int http_code,
 
 	rv = MHD_queue_response(connection, http_code, response);
 	MHD_destroy_response(response);
+
+	free(data_copy);
 
 	return(rv);
 }
