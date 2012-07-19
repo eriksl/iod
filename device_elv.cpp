@@ -698,12 +698,43 @@ bool DeviceElv::_read_ds1731(int fd, int addr, double &temp) throw()
 		rv = _command(fd, cmd.str());
 		dlog("< %s\n\n", rv.c_str());
 
+		int attempt;
+		bool ready = false;
+	
+		for(attempt = 0; attempt < 25; attempt++)
+		{
+			// check config register
+			cmd.str("w ac r 01 p");
+			dlog("> %s\n", cmd.str().c_str());
+			rv = _command(fd, cmd.str());
+			dlog("< %s\n\n", rv.c_str());
+			if(!_parse_bytes(rv, 1, v))
+			{
+				vlog("_read_ds1731: cmd read error\n");
+				return(false);
+			}
+			if(v[0] & 0x80)
+			{
+				ready = true;
+				break;
+			}
+
+			vlog("_read_ds1731: conversion not yet finished, attempt %d\n", attempt);
+			usleep(100000);
+		}
+
+		if(!ready)
+		{
+			vlog("_read_ds1731: temperature conversion not ready\n");
+			return(false);
+		}
+
 		// read temperature
 		cmd.str("w aa r 02 p");
 		dlog("> %s\n", cmd.str().c_str());
 		rv = _command(fd, cmd.str());
 		dlog("< %s\n\n", rv.c_str());
-		if(!_parse_bytes(rv, 1, v))
+		if(!_parse_bytes(rv, 2, v))
 		{
 			vlog("_read_ds1731: cannot read temperature register\n");
 			return(false);
@@ -716,8 +747,8 @@ bool DeviceElv::_read_ds1731(int fd, int addr, double &temp) throw()
 	}
 
 	bool negative	= !!(v[0] & 0x8000);
-	int hibyte		= v[0] & 0x7f00;
-	int lobyte		= v[0] & 0x00f0;
+	int hibyte		= (v[0] & 0x7f) >> 0;
+	int lobyte		= (v[1] & 0xf0) >> 4;
 
 	temp = hibyte + ((double)lobyte * 0.0625);
 
