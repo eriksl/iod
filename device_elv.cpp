@@ -171,7 +171,6 @@ int DeviceElv::_open() throw(string)
 		io.stamp_updated		= time(0);
 
 		_ios.push_back(io);
-
 	}
 	else
 		vlog("tsl2550@0x72 not detected\n");
@@ -199,10 +198,37 @@ int DeviceElv::_open() throw(string)
 		io.stamp_updated		= time(0);
 
 		_ios.push_back(io);
-
 	}
 	else
 		vlog("ds1731@0x90 not detected\n");
+
+	double tmp275_temperature;
+
+	if(_read_tmp275(fd, 0x92, tmp275_temperature))
+	{
+		vlog("tmp275@0x92 detected\n");
+
+		DeviceIO io;
+
+		io.id					= (int)_ios.size();
+		io.name					= "tmp275";
+		io.function				= "temperature";
+		io.unit					= "˙ C";
+		io.bustype				= "i2c";
+		io.address				= 0x92;
+		io.type					= DeviceIO::analog;
+		io.direction			= DeviceIO::input;
+		io.lower_boundary		= -40;
+		io.upper_boundary		= 125;
+		io.precision			= 2;
+		io.value				= tmp275_temperature;
+		io.stamp_updated		= time(0);
+
+		_ios.push_back(io);
+	}
+	else
+		vlog("tmp275@0x92 not detected\n");
+
 
 	return(fd);
 }
@@ -695,7 +721,7 @@ bool DeviceElv::_read_ds1731(int fd, int addr, double &temp) throw()
 		// start convert
 		cmd.str("w 51 p");
 		dlog("> %s\n", cmd.str().c_str());
-		rv = _command(fd, cmd.str());
+		rv = _command(fd, cmd.str(), 200, 0);
 		dlog("< %s\n\n", rv.c_str());
 
 		int attempt;
@@ -746,7 +772,7 @@ bool DeviceElv::_read_ds1731(int fd, int addr, double &temp) throw()
 		return(false);
 	}
 
-	bool negative	= !!(v[0] & 0x8000);
+	bool negative	= !!(v[0] & 0x80);
 	int hibyte		= (v[0] & 0x7f) >> 0;
 	int lobyte		= (v[1] & 0xf0) >> 4;
 
@@ -756,6 +782,79 @@ bool DeviceElv::_read_ds1731(int fd, int addr, double &temp) throw()
 		temp = 0 - temp;
 
 	vlog("_read_ds1731: temperature calculated as %f\n", temp);
+
+	return(true);
+}
+
+bool DeviceElv::_read_tmp275(int fd, int addr, double &temp) throw()
+{
+	ostringstream	cmd;
+	string			rv;
+	vector<int>		v;
+
+	try
+	{
+		// write 0xabcd in threshold register,
+		// check treshold register, it should return 0xabc0
+		cmd.str("");
+		cmd << "s " << hex << setfill('0') << setw(2) << addr << " 02 ab cd r 02 p";
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< %s\n\n", rv.c_str());
+		if(!_parse_bytes(rv, 2, v))
+		{
+			vlog("_read_tmp275: cmd read error\n");
+			return(false);
+		}
+		if((v[0] != 0xab) || (v[1] != 0xc0))
+		{
+			vlog("_read_tmp275: read threshold register does not return 0xabc0\n");
+			return(false);
+		}
+
+		// put device in 12 bits / shutdown mode, take one ("one shot") measurement
+		cmd.str("w 01 e1 r 01 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< %s\n\n", rv.c_str());
+		if(!_parse_bytes(rv, 1, v))
+		{
+			vlog("_read_tmp275: cannot write config register\n");
+			return(false);
+		}
+		if(v[0] != 0x61)
+		{
+			vlog("_read_tmp275: read config register does not return 0x61\n");
+			return(false);
+		}
+		
+		// conversion time takes 300 ms max
+		usleep(300000);
+
+		// read temperature
+		cmd.str("w 00 r 02 p");
+		dlog("> %s\n", cmd.str().c_str());
+		rv = _command(fd, cmd.str());
+		dlog("< %s\n\n", rv.c_str());
+		if(!_parse_bytes(rv, 2, v))
+		{
+			vlog("_read_tmp275: cmd read temperature error\n");
+			return(false);
+		}
+	}
+	catch(string s)
+	{
+		vlog("_read_tmp275: exception during io: %s\n", s.c_str());
+		return(false);
+	}
+
+	int16_t tmp = ((v[0] << 8) | (v[1] << 0)) >> 4;
+
+	vlog("_read_tmp275: temperature read %x\n", tmp);
+
+	temp = (double)tmp * 0.0625;
+
+	vlog("_read_tmp275: temperature calculated as %f\n", temp);
 
 	return(true);
 }
@@ -854,7 +953,21 @@ void DeviceElv::__update(DeviceIOIterator io) throw(string)
 		if(!_read_ds1731(fd, io->address, temperature))
 		{
 			__close();
-			throw(string("DeviceElv::__update::tsl2550: i/o error"));
+			throw(string("DeviceElv::__update::ds1731: i/o error"));
+		}
+
+		io->value			= temperature;
+		io->stamp_updated	= time(0);
+	}
+
+	if(io->name == "tmp275")
+	{
+		double temperature;
+
+		if(!_read_tmp275(fd, io->address, temperature))
+		{
+			__close();
+			throw(string("DeviceElv::__update::tmp275: i/o error"));
 		}
 
 		io->value			= temperature;
